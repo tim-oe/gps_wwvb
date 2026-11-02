@@ -1,0 +1,43 @@
+# gps-wwvb configuration.
+# Integers are decimal: GPS 0x42 = 66, accel 0x19 = 25, mag 0x1E = 30, ES100 0x32 = 50.
+
+[i2c]
+bus = 1
+
+[gps]
+address = 66
+
+[compass]
+accel_address = 25
+mag_address = 30
+# Declination is the World Magnetic Model value at the GPS fix, east positive.
+# True heading = magnetic heading + that declination.
+mag_offset_x = 0.0
+mag_offset_y = 0.0
+mag_offset_z = 0.0
+mag_scale_x = 1.0
+mag_scale_y = 1.0
+mag_scale_z = 1.0
+# Set true by `gps-wwvb calibrate` after +X, the open end of the V, points at WWVB.
+# The monitor refuses to start while this is false.
+calibrated = false
+
+[es100]
+address = 50
+# es100-wwvb uses GPIO.BOARD numbers: https://pypi.org/project/es100-wwvb/
+# IRQ is GPIO 17 (physical pin 11). EN is GPIO 4 (physical pin 7).
+irq = 11
+en = 7
+
+[log]
+path = "gps_wwvb.jsonl"
+format = "jsonl"
+
+[simulate]
+# San Jose. A simulated run prints the ~1501.7 km, 70.6 degree path to WWVB.
+lat = 37.363056
+lon = -121.928611
+alt_m = 18.9
+gps_interval_s = 0.2
+compass_interval_s = 0.05
+wwvb_interval_s = 0.2

@@ -1,0 +1,29 @@
+version: 1
+disable_existing_loggers: no
+formatters:
+    simple:
+        format: "%(asctime)s|%(filename)s:%(lineno)d|%(levelname)s- %(message)s"
+handlers:
+    console:
+        class: logging.StreamHandler
+        level: !ENV ${GPS_WWVB_LOG_LEVEL:INFO}
+        formatter: simple
+        stream: ext://sys.stdout
+
+    file:
+        class: logging.handlers.RotatingFileHandler
+        level: !ENV ${GPS_WWVB_LOG_LEVEL:INFO}
+        formatter: simple
+        filename: !ENV ${GPS_WWVB_LOG_PATH:.}/${GPS_WWVB_LOG_NAME:gps-wwvb}.log
+        maxBytes: 2097152 # 2MB
+        backupCount: 10
+        encoding: utf8
+
+loggers:
+    root:
+        level: !ENV ${GPS_WWVB_LOG_LEVEL:INFO}
+        handlers: [console, file]
+    gps_wwvb.devices.gps_ubx:
+        level: DEBUG
+    ES100:
+        level: WARNING

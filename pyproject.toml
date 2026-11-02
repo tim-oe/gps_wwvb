@@ -1,0 +1,129 @@
+[tool.poetry]
+name = "gps-wwvb"
+version = "0.1.0"
+description = "Compare ES100 WWVB time with a u-blox GPS and aim the antenna with an LSM303 compass."
+readme = "README.md"
+packages = [{ include = "gps_wwvb", from = "src" }]
+include = ["src/gps_wwvb/logging.yml"]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.15"
+smbus2 = ">=0.4.3"
+pyubx2 = ">=1.2.47"
+adafruit-circuitpython-lis2mdl = "^2.1.30"
+adafruit-circuitpython-lsm303-accel = "^1.1.28"
+pygeomag = "^1.1.0"
+pyaml-env = "^1.2.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+ruff = ">=0.8"
+debugpy = ">=1.8"
+mypy = ">=1.13"
+pylint = "^4.1.3"
+
+
+[tool.poetry.group.test.dependencies]
+coverage = "^7.17.0"
+pytest-cov = "^7.1.0"
+pytest-html = "^4.2.0"
+
+[tool.poetry.scripts]
+gps-wwvb = "gps_wwvb.cli:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "-m",
+    "not hardware",
+    "--html=reports/test.html",
+    "--self-contained-html",
+    "--junit-xml=reports/test.xml",
+    "--cov=gps_wwvb",
+    "--cov-report=html:reports/coverage",
+    "--cov-report=xml:reports/coverage.xml",
+    "--cov-report=term-missing",
+]
+markers = [
+    "hardware: tests that require the real GPS, ES100, or LSM303 (deselected by default)",
+]
+
+# https://coverage.readthedocs.io/en/latest/config.html
+[tool.coverage.run]
+source = ["gps_wwvb"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.xml]
+output = "reports/coverage.xml"
+
+[tool.coverage.html]
+directory = "reports/coverage"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["gps_wwvb"]
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pyubx2",
+    "pygeomag",
+    "pyaml_env",
+    "smbus2",
+    "adafruit_lis2mdl",
+    "adafruit_lsm303_accel",
+    "board",
+    "es100",
+]
+ignore_missing_imports = true
+
+[tool.pylint.main]
+py-version = "3.11"
+source-roots = ["src"]
+fail-under = 10
+persistent = false
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-args = 12
+max-positional-arguments = 8
+max-locals = 30
+
+[tool.pylint.similarities]
+min-similarity-lines = 30
+
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "broad-exception-caught",
+    "too-few-public-methods",
+    "too-many-instance-attributes",
+    "import-outside-toplevel",
+    "fixme",
+]

@@ -1,0 +1,15 @@
+.venv/
+dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+*.log
+*.log.*
+reports/
+.coverage
+.coverage.*
+coverage.xml
+tests/data/*
+!tests/data/.gitkeep

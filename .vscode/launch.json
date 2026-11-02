@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run simulated",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "gps_wwvb.cli",
+      "args": ["run", "--simulate"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "Attach to tec-pi-wwv",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5678
+      },
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}/src",
+          "remoteRoot": "/home/tcronin/src/gps_wwvb-dev/src"
+        }
+      ]
+    }
+  ]
+}

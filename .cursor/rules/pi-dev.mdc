@@ -1,0 +1,15 @@
+---
+description: Develop gps-wwvb locally and run hardware checks on tec-pi-wwv over SSH
+alwaysApply: true
+---
+
+# Pi development
+
+The Raspberry Pi Zero 2 W (`tec-pi-wwv`) has 512 MB of RAM. Do not use Cursor Remote-SSH, and do not run an IDE server on it.
+
+- Edit and test on this machine with `make test` and `make run-sim`. Local runs use the simulator, or `--replay` on a recording.
+- Check real hardware with `make remote ARGS='status'` (or another subcommand). That syncs `src/`, stops `gps-wwvb.service`, and runs the dev install over SSH.
+- Turn a hardware problem into a test with `make fetch-recordings`, then replay the files under `tests/data/` locally.
+- After a dependency change, run `make dev-deps`. That syncs `pyproject.toml`, `poetry.lock`, and `requirements.txt`, then installs `requirements.txt` into the existing dev virtualenv. `make sync` copies those files and does not install them.
+- Do not run `pip install`, `poetry install`, or compile anything on the Pi except through `make dev-setup`, `make dev-deps`, and `deploy/install_on_pi.sh`.
+- Only one process may use the ES100 and the I2C bus. Dev targets stop the service and leave it stopped. Restart it with `make svc-start` when you are finished.

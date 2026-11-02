@@ -1,0 +1,28 @@
+[Unit]
+Description=GPS and WWVB monitor
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@HOME@/src/gps_wwvb
+Environment=PYTHONUNBUFFERED=1
+Environment=GPS_WWVB_LOG_PATH=@HOME@/src/gps_wwvb
+Environment=GPS_WWVB_LOG_NAME=gps-wwvb
+ExecStart=@HOME@/src/gps_wwvb/.venv/bin/gps-wwvb --config /etc/gps_wwvb.toml run
+# gps-wwvb.log and gps_wwvb.jsonl live in the install directory. Calibration is separate.
+ReadWritePaths=@HOME@/src/gps_wwvb /var/lib/gps-wwvb
+Restart=on-failure
+RestartSec=5
+# 2: bad config or logging file. 3: antenna not calibrated.
+RestartPreventExitStatus=2 3
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
