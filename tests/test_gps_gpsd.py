@@ -128,6 +128,14 @@ def test_gpsd_uses_pps_and_toff_offsets_over_serial_arrival_delay():
     assert fix_toff.clock_offset_s == pytest.approx(-0.118824059)
     assert fix_toff.time_accuracy_ns == 5_000_000
 
+    sock_tpv_then_pps = _FakeSocket([_sky_line(17) + _tpv_line(ept=0.005), pps])
+    gps_mid_second = GpsdGps(connect=lambda _addr, _timeout: sock_tpv_then_pps)  # type: ignore[arg-type]
+    fix_mid = gps_mid_second.read_fix(timeout=2.0)
+    assert fix_mid is not None
+    assert fix_mid.num_sv == 17
+    assert fix_mid.clock_offset_s == pytest.approx(-0.003687681)
+    assert fix_mid.time_accuracy_ns == 954
+
 
 def test_gpsd_skips_initial_stale_tpv_and_keeps_fresh_one():
     stale = _tpv_line(when=datetime(2026, 1, 1, 0, 0, tzinfo=UTC), lat=10.0, lon=20.0)

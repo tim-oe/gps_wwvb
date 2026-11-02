@@ -25,6 +25,7 @@ _WATCH = b'?WATCH={"enable":true,"json":true,"timing":true,"pps":true};\n'
 _FIX_LOG_INTERVAL_S = 30.0
 _MAX_STALE_REPORT_S = 2.0
 _TIMING_MAX_AGE_S = 5.0
+_INITIAL_PPS_WAIT_S = 1.1
 
 ConnectFn = Callable[[tuple[str, int], float], socket.socket]
 
@@ -52,17 +53,20 @@ class GpsdGps:
         self._pps_at: float | None = None
         self._toff_offset_s: float | None = None
         self._toff_at: float | None = None
+        self._initial_pps_checked = False
         self._fix_logged_at: float | None = None
 
     def read_fix(self, timeout: float = 2.0) -> GpsFix | None:
         """Return the next fresh ``TPV`` report from ``gpsd``."""
         deadline = time.monotonic() + timeout
         dropped_stale = False
+        pending_msg: dict | None = None
+        pending_now = 0.0
         while time.monotonic() < deadline:
             remaining = max(0.05, deadline - time.monotonic())
             line = self._read_line(remaining)
             if line is None:
-                return None
+                break
             self.last_count = len(line)
             msg = _parse_json(line)
             if msg is None:
@@ -75,18 +79,13 @@ class GpsdGps:
                 continue
             if kind in ("PPS", "TOFF"):
                 self._note_timing(kind, msg)
+                if kind == "PPS" and pending_msg is not None:
+                    return self._finish_fix(pending_msg, pending_now)
                 continue
             if kind != "TPV":
                 continue
             now = time.time()
-            offset_s, pps_tacc_ns = self._current_timing()
-            fix = parse_tpv(
-                msg,
-                now,
-                num_sv=self._num_sv,
-                clock_offset_s=offset_s,
-                pps_tacc_ns=pps_tacc_ns,
-            )
+            fix = self._build_fix(msg, now)
             if (
                 not dropped_stale
                 and fix.utc is not None
@@ -95,9 +94,38 @@ class GpsdGps:
             ):
                 dropped_stale = True
                 continue
+            if (
+                pending_msg is None
+                and self._pps_at is None
+                and not self._initial_pps_checked
+                and time.monotonic() + 0.2 < deadline
+            ):
+                self._initial_pps_checked = True
+                pending_msg = msg
+                pending_now = now
+                deadline = min(deadline, time.monotonic() + _INITIAL_PPS_WAIT_S)
+                continue
+            self._initial_pps_checked = True
             self._log_fix(fix)
             return fix
+        if pending_msg is not None:
+            return self._finish_fix(pending_msg, pending_now)
         return None
+
+    def _build_fix(self, msg: dict, now: float) -> GpsFix:
+        offset_s, pps_tacc_ns = self._current_timing()
+        return parse_tpv(
+            msg,
+            now,
+            num_sv=self._num_sv,
+            clock_offset_s=offset_s,
+            pps_tacc_ns=pps_tacc_ns,
+        )
+
+    def _finish_fix(self, msg: dict, now: float) -> GpsFix:
+        fix = self._build_fix(msg, now)
+        self._log_fix(fix)
+        return fix
 
     def read_raw(self, timeout: float = 2.0) -> bytes:
         """Serialize a ``read_fix`` result as a NAV-PVT frame for ``record``."""
@@ -119,6 +147,7 @@ class GpsdGps:
     def close(self) -> None:
         sock = self._sock
         self._sock = None
+        self._initial_pps_checked = False
         self._buf.clear()
         if sock is not None:
             with contextlib.suppress(OSError):
