@@ -1,11 +1,13 @@
 # gps-wwvb configuration.
-# Integers are decimal: GPS 0x42 = 66, accel 0x19 = 25, mag 0x1E = 30, ES100 0x32 = 50.
+# Integers are decimal: accel 0x19 = 25, mag 0x1E = 30, ES100 0x32 = 50.
 
 [i2c]
 bus = 1
 
 [gps]
-address = 66
+# Reads the MAX-M8Q UART + PPS feed from gpsd on localhost:2947.
+gpsd_host = "127.0.0.1"
+gpsd_port = 2947
 
 [compass]
 accel_address = 25

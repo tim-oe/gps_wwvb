@@ -21,6 +21,7 @@ class GpsFix:
     time_accuracy_ns: int | None
     num_sv: int | None
     received_at: float
+    clock_offset_s: float | None = None
 
     @property
     def position_ok(self) -> bool:

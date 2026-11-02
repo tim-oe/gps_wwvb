@@ -46,25 +46,25 @@ def test_gps_debug_follows_the_log_level_and_es100_info_is_dropped(tmp_path, mon
     monkeypatch.setenv("GPS_WWVB_LOG_NAME", "gps-wwvb")
     monkeypatch.delenv("GPS_WWVB_NO_CONSOLE", raising=False)
     init_logging(find_logging_config())
-    logging.getLogger("gps_wwvb.devices.gps_ubx").info("GPS fix lat 1")
-    logging.getLogger("gps_wwvb.devices.gps_ubx").debug("GPS NAV-PVT deadbeef")
+    logging.getLogger("gps_wwvb.devices.gps_gpsd").info("GPS fix lat 1")
+    logging.getLogger("gps_wwvb.devices.gps_gpsd").debug("GPS (gpsd) fix deadbeef")
     logging.getLogger("ES100").info("DST info: DST  ENDS-TODAY")
     logging.getLogger("ES100").warning("ES100 failed")
     text = (tmp_path / "gps-wwvb.log").read_text(encoding="utf-8")
     out = capsys.readouterr().out
     assert "GPS fix lat 1" in text
-    assert "GPS NAV-PVT deadbeef" not in text
+    assert "GPS (gpsd) fix deadbeef" not in text
     assert "DST info" not in text
     assert "ES100 failed" in text
-    assert "GPS NAV-PVT deadbeef" not in out
+    assert "GPS (gpsd) fix deadbeef" not in out
     assert "DST info" not in out
 
     monkeypatch.setenv("GPS_WWVB_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("GPS_WWVB_LOG_NAME", "gps-wwvb-debug")
     init_logging(find_logging_config())
-    logging.getLogger("gps_wwvb.devices.gps_ubx").debug("GPS NAV-PVT cafebabe")
+    logging.getLogger("gps_wwvb.devices.gps_gpsd").debug("GPS (gpsd) fix cafebabe")
     debug_text = (tmp_path / "gps-wwvb-debug.log").read_text(encoding="utf-8")
-    assert "GPS NAV-PVT cafebabe" in debug_text
+    assert "GPS (gpsd) fix cafebabe" in debug_text
 
 
 def test_logging_config_does_not_come_from_the_working_directory(tmp_path, monkeypatch):

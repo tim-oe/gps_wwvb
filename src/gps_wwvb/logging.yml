@@ -23,7 +23,7 @@ loggers:
     root:
         level: !ENV ${GPS_WWVB_LOG_LEVEL:INFO}
         handlers: [console, file]
-    gps_wwvb.devices.gps_ubx:
+    gps_wwvb.devices.gps_gpsd:
         level: DEBUG
     ES100:
         level: WARNING

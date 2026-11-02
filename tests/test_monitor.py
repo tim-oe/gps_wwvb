@@ -47,7 +47,8 @@ SJC = (37.363056, -121.928611)
 def test_config_uses_the_scanned_addresses():
     config = load_config(ROOT / "gps_wwvb.toml")
     assert config.i2c_bus == 1
-    assert config.gps_address == 0x42
+    assert config.gpsd_host == "127.0.0.1"
+    assert config.gpsd_port == 2947
     assert config.compass_accel_address == 0x19
     assert config.compass_mag_address == 0x1E
     assert config.es100_address == 0x32
@@ -230,7 +231,7 @@ def test_csv_log_writes_a_header_and_blanks_for_missing_values(tmp_path: Path):
     assert fields[LOG_COLUMNS.index("offset_ms")] == ""
 
 
-def test_gps_is_sampled_once_after_a_reception(tmp_path: Path, caplog):
+def test_a_fresh_fix_is_reused_for_the_reception(tmp_path: Path, caplog):
     gps = _Gps(_sjc_fix())
     calls: list[float] = []
 
@@ -248,10 +249,11 @@ def test_gps_is_sampled_once_after_a_reception(tmp_path: Path, caplog):
         echo=False,
     )
     monitor.clock = lambda: datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+    monitor._gps_poll_s = 30.0  # pylint: disable=protected-access
 
     with caplog.at_level(logging.INFO):
         monitor.run(threading.Event(), max_readings=1)
-    assert calls == [2.0, 2.0]
+    assert calls == [2.0]
     info = [record.message for record in caplog.records if record.levelno == logging.INFO]
     assert any(message.startswith("GPS:") for message in info)
     assert any(message.startswith("Compass: mag 70.6") and "turn " in message for message in info)
@@ -283,6 +285,32 @@ def test_gps_is_sampled_once_after_a_reception(tmp_path: Path, caplog):
     assert failed.wwvb.receive_calls == 0
 
 
+def test_gps_keeps_sampling_while_wwvb_receive_is_blocked(tmp_path: Path):
+    gps = _Gps(_sjc_fix())
+    calls: list[float] = []
+
+    def read_fix(timeout: float = 2.0):
+        calls.append(timeout)
+        return _sjc_fix()
+
+    gps.read_fix = read_fix  # type: ignore[method-assign]
+    monitor = Monitor(
+        gps,
+        _Compass(),
+        _SlowWwvb(0.35),
+        log_path=tmp_path / "log.jsonl",
+        log_format="jsonl",
+        echo=False,
+    )
+    monitor.clock = lambda: datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+    monitor._gps_poll_s = 0.05  # pylint: disable=protected-access
+    monitor.run(threading.Event(), max_readings=1)
+    assert len(calls) >= 3
+    row = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8"))
+    assert row["offset_ms"] is not None
+    assert row["fix_age_s"] < GPS_FIX_MAX_AGE_S
+
+
 def test_startup_warns_when_the_antenna_is_more_than_15_degrees_off(tmp_path: Path, caplog):
     monitor = Monitor(
         _Gps(_sjc_fix()),
@@ -297,6 +325,26 @@ def test_startup_warns_when_the_antenna_is_more_than_15_degrees_off(tmp_path: Pa
         monitor.run(threading.Event(), max_readings=1)
     warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
     assert any("counterclockwise" in message and "tolerance ±15" in message for message in warnings)
+
+
+def test_a_missed_gps_read_is_warned_once(caplog):
+    monitor = Monitor(
+        _Gps(None), _Compass(), _Wwvb(), log_path=None, log_format="jsonl", echo=False
+    )
+    with caplog.at_level(logging.WARNING):
+        assert monitor._sample_gps() is None  # pylint: disable=protected-access
+        assert monitor._sample_gps() is None  # pylint: disable=protected-access
+    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    assert warnings == ["GPS read timed out"]
+
+
+def test_an_empty_nav_pvt_is_warned(caplog):
+    monitor = Monitor(
+        _Gps(_empty_fix()), _Compass(), _Wwvb(), log_path=None, log_format="jsonl", echo=False
+    )
+    with caplog.at_level(logging.WARNING):
+        monitor._sample_gps()  # pylint: disable=protected-access
+    assert "GPS report has no position or time" in caplog.text
 
 
 def test_startup_retries_until_the_gps_fix_is_usable(tmp_path: Path, caplog):
@@ -692,6 +740,17 @@ class _ExplodingWwvb:
 
     def receive(self):
         raise AssertionError("WWVB receive during a maintenance gap")
+
+
+class _SlowWwvb:
+    def __init__(self, delay_s: float):
+        self.delay_s = delay_s
+        self.exhausted = False
+
+    def receive(self):
+        time.sleep(self.delay_s)
+        self.exhausted = True
+        return _reading()
 
 
 class _ScriptedWwvb:

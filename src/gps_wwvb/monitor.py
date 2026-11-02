@@ -31,9 +31,10 @@ _BREAK = object()
 _CONTINUE = object()
 _OPEN = object()
 
-# A NAV-PVT older than this no longer contributes a clock offset. Each reception
-# takes its own sample, and this drops a sample from the previous reception.
+# A NAV-PVT older than this no longer contributes a clock offset. The GPS loop
+# samples about twice a second, so a reception can use the sample it already has.
 GPS_FIX_MAX_AGE_S = 5.0
+_GPS_POLL_S = 0.5
 # Calibration accepts 5 deg. 15 deg still splits the signal across the V and
 # stays outside ordinary compass noise.
 ANTENNA_AIM_TOLERANCE_DEG = 15.0
@@ -130,13 +131,9 @@ class _ThrottledLog:
         self._hidden = 0
 
     def log(self, source: str, exc: Exception) -> None:
-        now = time.monotonic()
-        if self._last is not None and now - self._last < self.interval_s:
-            self._hidden += 1
+        hidden = self._claim()
+        if hidden is None:
             return
-        hidden = self._hidden
-        self._hidden = 0
-        self._last = now
         if hidden:
             logger.error(
                 "%s: %s (%d similar errors suppressed)",
@@ -147,6 +144,25 @@ class _ThrottledLog:
             )
         else:
             logger.error("%s: %s", source, exc, exc_info=True)
+
+    def warn(self, message: str) -> None:
+        hidden = self._claim()
+        if hidden is None:
+            return
+        if hidden:
+            logger.warning("%s (%d similar warnings suppressed)", message, hidden)
+        else:
+            logger.warning("%s", message)
+
+    def _claim(self) -> int | None:
+        now = time.monotonic()
+        if self._last is not None and now - self._last < self.interval_s:
+            self._hidden += 1
+            return None
+        hidden = self._hidden
+        self._hidden = 0
+        self._last = now
+        return hidden
 
 
 class Monitor:
@@ -173,7 +189,10 @@ class Monitor:
         self._stop = threading.Event()
         self._log = SampleLog(log_path, log_format)
         self._gps_errors = _ThrottledLog()
+        self._gps_misses = _ThrottledLog()
         self._wwvb_errors = _ThrottledLog()
+        self._gps_lock = threading.Lock()
+        self._gps_poll_s = _GPS_POLL_S
 
     def note_fix(self, fix: GpsFix) -> None:
         """Remember a fix that has a position or a resolved time.
@@ -188,7 +207,10 @@ class Monitor:
             self._fix = fix
             self._noted_at = time.monotonic()
             if fix.time_ok and fix.utc is not None:
-                self._offset_s = fix.utc.timestamp() - fix.received_at
+                if fix.clock_offset_s is not None:
+                    self._offset_s = fix.clock_offset_s
+                else:
+                    self._offset_s = fix.utc.timestamp() - fix.received_at
             else:
                 self._offset_s = None
 
@@ -293,9 +315,15 @@ class Monitor:
         readings = 0
         loops = 0
         announced_gap = False
+        gps_thread = None
         try:
             if not replay and not self._startup():
                 return
+            if not replay:
+                gps_thread = threading.Thread(
+                    target=self._keep_gps, name="gps-wwvb-gps", daemon=True
+                )
+                gps_thread.start()
             while not stop.is_set():
                 loops += 1
                 if max_loops is not None and loops > max_loops:
@@ -310,13 +338,15 @@ class Monitor:
                 if step is _CONTINUE:
                     continue
                 if not replay:
-                    self._sample_gps()
+                    self._sample_gps_if_stale()
                 self.handle_reading(step)
                 readings += 1
                 if max_readings is not None and readings >= max_readings:
                     break
         finally:
             stop.set()
+            if gps_thread is not None:
+                gps_thread.join(timeout=3.0)
             self._log.close()
 
     def close(self) -> None:
@@ -437,16 +467,34 @@ class Monitor:
                 return None
         return None
 
+    def _keep_gps(self) -> None:
+        """Keep the latest GPS fix and PPS offset fresh while WWVB receive blocks."""
+        while not self._stop.is_set():
+            if self._stop.wait(self._gps_poll_s):
+                return
+            self._sample_gps()
+
+    def _sample_gps_if_stale(self) -> None:
+        _fix, _offset, age = self.snapshot()
+        if age is not None and age <= GPS_FIX_MAX_AGE_S:
+            return
+        self._sample_gps()
+
     def _sample_gps(self) -> GpsFix | None:
-        """Take one NAV-PVT and remember it. None when the read fails."""
-        try:
-            fix = self.gps.read_fix(timeout=2.0)
-        except Exception as exc:
-            self._gps_errors.log("gps", exc)
-            return None
-        if fix is not None:
+        """Take one GPS fix and remember it. None when the read fails."""
+        with self._gps_lock:
+            try:
+                fix = self.gps.read_fix(timeout=2.0)
+            except Exception as exc:
+                self._gps_errors.log("gps", exc)
+                return None
+            if fix is None:
+                self._gps_misses.warn("GPS read timed out")
+                return None
+            if not fix.position_ok and not fix.time_ok:
+                self._gps_misses.warn("GPS report has no position or time")
             self.note_fix(fix)
-        return fix
+            return fix
 
     def _emit(self, observation: Observation) -> None:
         if self.echo:

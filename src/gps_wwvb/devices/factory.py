@@ -8,8 +8,7 @@ from pathlib import Path
 
 from gps_wwvb.config import Config
 from gps_wwvb.devices.compass import make_reading
-from gps_wwvb.devices.gps_ubx import UbxGps
-from gps_wwvb.devices.i2c import Smbus2Link
+from gps_wwvb.devices.gps_gpsd import GpsdGps
 from gps_wwvb.devices.replay import ReplayCompass, ReplayGps, ReplayWwvb
 from gps_wwvb.devices.sim import SimCompass, SimGps, SimWwvb
 from gps_wwvb.devices.types import CompassReading, CompassSource, Devices, GpsSource, WwvbSource
@@ -71,7 +70,6 @@ def open_devices(config: Config, *, simulate: bool, replay: Path | None) -> Devi
                 interval_s=config.sim_wwvb_interval_s,
             ),
         )
-    link = Smbus2Link(config.i2c_bus)
     compass = None
     try:
         from gps_wwvb.devices.compass_adafruit import AdafruitLsm303
@@ -88,12 +86,11 @@ def open_devices(config: Config, *, simulate: bool, replay: Path | None) -> Devi
                 config.compass_accel_address,
                 config.compass_mag_address,
             )
-        gps = UbxGps(link, config.gps_address, configure=True)
+        gps = GpsdGps(config.gpsd_host, config.gpsd_port)
         compass = AdafruitLsm303()
     except Exception:
         if compass is not None:
             compass.close()
-        link.close()
         raise
     return Devices(
         gps,
@@ -105,10 +102,7 @@ def open_devices(config: Config, *, simulate: bool, replay: Path | None) -> Devi
 class CalibratedCompass:
     """Apply the config file's hard-iron correction to an LSM303.
 
-    Declination is applied later, from the GPS fix. The Adafruit drivers are
-    used on the Pi because the magnetometer die is an LIS2MDL. ``Lsm303``
-    remains the register-level driver: it honours the configured addresses and
-    speaks both the AGR and DLHC maps, and the unit tests drive it directly.
+    Declination is applied later, from the GPS fix.
     """
 
     def __init__(self, device: CompassSource, config: Config):

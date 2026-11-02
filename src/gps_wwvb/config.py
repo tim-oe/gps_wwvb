@@ -26,23 +26,24 @@ _SECTION = re.compile(r"(?m)^\[([A-Za-z0-9_-]+)\][^\n]*$")
 class Config:
     path: Path | None
     i2c_bus: int
-    gps_address: int
-    compass_accel_address: int
-    compass_mag_address: int
-    mag_offset: tuple[float, float, float]
-    mag_scale: tuple[float, float, float]
-    compass_calibrated: bool
-    es100_address: int
-    es100_irq: int
-    es100_en: int
-    log_path: Path | None
-    log_format: str
-    sim_lat: float
-    sim_lon: float
-    sim_alt_m: float
-    sim_gps_interval_s: float
-    sim_compass_interval_s: float
-    sim_wwvb_interval_s: float
+    gpsd_host: str = "127.0.0.1"
+    gpsd_port: int = 2947
+    compass_accel_address: int = 0x19
+    compass_mag_address: int = 0x1E
+    mag_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mag_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    compass_calibrated: bool = False
+    es100_address: int = 0x32
+    es100_irq: int = 11
+    es100_en: int = 7
+    log_path: Path | None = None
+    log_format: str = "jsonl"
+    sim_lat: float = 37.363056
+    sim_lon: float = -121.928611
+    sim_alt_m: float = 18.9
+    sim_gps_interval_s: float = 0.2
+    sim_compass_interval_s: float = 0.05
+    sim_wwvb_interval_s: float = 0.2
 
 
 def search_paths() -> list[Path]:
@@ -229,10 +230,14 @@ def _from_mapping(data: dict, path: Path | None) -> Config:
     log_format = str(log.get("format", "jsonl")).lower()
     if log_format not in {"jsonl", "csv"}:
         raise ConfigError(f"log format must be jsonl or csv, not {log_format!r}")
+    gpsd_port = _parse_int(gps.get("gpsd_port", gps.get("port", 2947)))
+    if not 1 <= gpsd_port <= 65535:
+        raise ConfigError(f"gps.gpsd_port must be 1-65535, not {gpsd_port}")
     return Config(
         path=path,
         i2c_bus=_address(i2c.get("bus", 1), "i2c.bus"),
-        gps_address=_address(gps.get("address", 0x42), "gps.address"),
+        gpsd_host=str(gps.get("gpsd_host", gps.get("host", "127.0.0.1"))),
+        gpsd_port=gpsd_port,
         compass_accel_address=_address(compass.get("accel_address", 0x19), "compass.accel_address"),
         compass_mag_address=_address(compass.get("mag_address", 0x1E), "compass.mag_address"),
         mag_offset=(

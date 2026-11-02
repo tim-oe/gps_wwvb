@@ -22,7 +22,8 @@ def test_working_directory_config_is_not_implicit(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "search_paths", lambda: [])
     config = load_config()
     assert config.path is None
-    assert config.gps_address == 0x42
+    assert config.gpsd_host == "127.0.0.1"
+    assert config.gpsd_port == 2947
 
 
 def test_invalid_toml_and_values_are_config_errors(tmp_path, capsys):
