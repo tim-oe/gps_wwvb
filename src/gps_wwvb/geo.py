@@ -18,6 +18,7 @@ EARTH_RADIUS_KM = 6371.0
 RADIO_SPEED_KM_S = 299_250.0
 WWVB_LAT = 40.678062
 WWVB_LON = -105.046688
+WWVB_FRAME_SECONDS = 134.0
 CIVIL_TWILIGHT_DEG = -6.0
 
 
@@ -131,25 +132,28 @@ def format_turn(turn_deg: float | None) -> str:
     return f"{abs(turn_deg):.1f} deg {turn_direction(turn_deg)}"
 
 
-def wwvb_maintenance_gap(when: datetime) -> bool:
-    """True while WWVB is off for its scheduled break.
+def wwvb_maintenance_gap(when: datetime, duration_s: float = 0.0) -> bool:
+    """True while WWVB is off for its scheduled break, or within ``duration_s`` of it.
 
     The transmitter is off from minute 10 until minute 16, and from minute 40
-    until minute 46, of each hour.
+    until minute 46, of each hour. Passing ``WWVB_FRAME_SECONDS`` also covers a
+    reception that would run into that break before finishing.
     """
-    when = _as_utc(when)
-    minute = when.minute
-    return (10 <= minute < 16) or (40 <= minute < 46)
+    pos = _half_hour_seconds(when)
+    start = 600.0 - max(0.0, duration_s)
+    return start <= pos < 960.0
 
 
-def seconds_until_on_air(when: datetime) -> float:
-    """Seconds until the current maintenance gap ends. Zero when WWVB is on."""
-    when = _as_utc(when)
-    if not wwvb_maintenance_gap(when):
+def seconds_until_on_air(when: datetime, duration_s: float = 0.0) -> float:
+    """Seconds until the current or impending maintenance gap ends. Zero when clear."""
+    if not wwvb_maintenance_gap(when, duration_s=duration_s):
         return 0.0
-    target_minute = 16 if when.minute < 16 else 46
-    target = when.replace(minute=target_minute, second=0, microsecond=0)
-    return max(0.0, (target - when).total_seconds())
+    return max(0.0, 960.0 - _half_hour_seconds(when))
+
+
+def _half_hour_seconds(when: datetime) -> float:
+    when = _as_utc(when)
+    return (when.minute % 30) * 60.0 + when.second + when.microsecond / 1_000_000.0
 
 
 def solar_elevation_deg(lat_deg: float, lon_deg: float, when: datetime) -> float:

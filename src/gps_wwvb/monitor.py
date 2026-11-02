@@ -14,6 +14,7 @@ from pathlib import Path
 
 from gps_wwvb.devices.types import GpsFix, WwvbReading
 from gps_wwvb.geo import (
+    WWVB_FRAME_SECONDS,
     antenna_is_aimed,
     antenna_turn_deg,
     format_turn,
@@ -355,13 +356,13 @@ class Monitor:
     def _hold_for_maintenance(self, stop, loops: int, max_loops: int | None, announced: bool):
         """Log a maintenance gap once, then wait it out without another row."""
         now = self.radio_now()
-        if not wwvb_maintenance_gap(now):
+        if not wwvb_maintenance_gap(now, WWVB_FRAME_SECONDS):
             return _OPEN, False
         if not announced:
             self._emit(Observation(event="maintenance_gap", system_time=now))
         if max_loops is not None and loops >= max_loops:
             return _BREAK, True
-        if stop.wait(min(1.0, seconds_until_on_air(now))):
+        if stop.wait(min(1.0, seconds_until_on_air(now, WWVB_FRAME_SECONDS))):
             return _BREAK, True
         return _CONTINUE, True
 
@@ -503,10 +504,11 @@ class Monitor:
 
 
 def format_observation(observation: Observation) -> str:
-    stamp = observation.system_time.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
     if observation.event == "maintenance_gap":
+        stamp = observation.system_time.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
         minute = 16 if observation.system_time.minute < 16 else 46
         return f"{stamp}Z WWVB maintenance gap (off air until minute {minute:02d})"
+    stamp = _round_second(observation.system_time).strftime("%Y-%m-%d %H:%M:%S")
     offset = "n/a" if observation.offset_ms is None else f"{observation.offset_ms:+.1f} ms"
     antenna = "n/a" if observation.antenna is None else str(observation.antenna)
     distance = format_number(observation.distance_km, ".1f")
@@ -560,6 +562,10 @@ def format_number(value: float | None, spec: str) -> str:
     if value is None:
         return "n/a"
     return format(value, spec)
+
+
+def _round_second(when: datetime) -> datetime:
+    return (when.astimezone(UTC) + timedelta(milliseconds=500)).replace(microsecond=0)
 
 
 def _safe_compass(compass):

@@ -124,6 +124,21 @@ def test_maintenance_gap_does_not_touch_the_receiver(tmp_path: Path):
     assert "maintenance_gap" in text
 
 
+def test_maintenance_gap_holds_when_a_frame_would_run_into_the_break(tmp_path: Path):
+    monitor = Monitor(
+        _Gps(_sjc_fix()),
+        _Compass(),
+        _ExplodingWwvb(),
+        log_path=tmp_path / "log.jsonl",
+        log_format="jsonl",
+        echo=False,
+    )
+    monitor.clock = lambda: datetime(2026, 11, 1, 12, 8, 30, tzinfo=UTC)
+    monitor.run(threading.Event(), max_loops=1)
+    text = (tmp_path / "log.jsonl").read_text(encoding="utf-8")
+    assert "maintenance_gap" in text
+
+
 def test_maintenance_gap_is_logged_once(tmp_path: Path):
     monitor = Monitor(
         _Gps(_sjc_fix()),
@@ -217,6 +232,11 @@ def test_format_observation_matches_the_reception_line():
         "2026-11-01 12:00:00Z offset +1.2 ms  ant 1  1501.7 km  brg 70.6  "
         "hdg 70.6  dec +12.7  turn 0.0 deg  day  fix 0.2s"
     )
+    early_irq = datetime(2026, 11, 2, 18, 22, 49, 993000, tzinfo=UTC)
+    rounded = format_observation(
+        _observation(early_irq, offset_ms=19.2, fix_age_s=0.2, day_night="day")
+    )
+    assert rounded.startswith("2026-11-02 18:22:50Z offset +19.2 ms")
 
 
 def test_csv_log_writes_a_header_and_blanks_for_missing_values(tmp_path: Path):

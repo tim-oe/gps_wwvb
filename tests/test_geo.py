@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from gps_wwvb.geo import (
+    WWVB_FRAME_SECONDS,
     WWVB_LAT,
     WWVB_LON,
     antenna_is_aimed,
@@ -94,6 +95,14 @@ def test_maintenance_windows_are_the_scheduled_breaks():
     assert not wwvb_maintenance_gap(at(46, 0))
     assert seconds_until_on_air(at(12, 30)) == pytest.approx(210.0)
     assert seconds_until_on_air(at(20, 0)) == 0.0
+    # A 134 s frame starting after :07:46 or :37:46 would run into the gap.
+    assert not wwvb_maintenance_gap(at(7, 45), WWVB_FRAME_SECONDS)
+    assert wwvb_maintenance_gap(at(7, 46), WWVB_FRAME_SECONDS)
+    assert wwvb_maintenance_gap(at(8, 30), WWVB_FRAME_SECONDS)
+    assert seconds_until_on_air(at(8, 30), WWVB_FRAME_SECONDS) == pytest.approx(450.0)
+    assert not wwvb_maintenance_gap(at(37, 45), WWVB_FRAME_SECONDS)
+    assert wwvb_maintenance_gap(at(38, 20), WWVB_FRAME_SECONDS)
+    assert seconds_until_on_air(at(38, 20), WWVB_FRAME_SECONDS) == pytest.approx(460.0)
 
 
 def test_day_and_night_follow_the_sun():
