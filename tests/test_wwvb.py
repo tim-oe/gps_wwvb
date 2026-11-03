@@ -173,41 +173,35 @@ def test_single_cycle_receive_stops_on_cycle_complete_and_preserves_microseconds
     class ES100:
         def __init__(self, **_kwargs):
             self._gpio = _Gpio()
-            self._antenna = 1
-            self._rx_antenna = "Antenna1"
+            self._antenna = 2
+            self._rx_antenna = None
             self._rx_complete = False
             self._cycle_complete = False
             self._status_ok = False
             self._system_time_received = None
             self.control0_writes: list[int] = []
-            self.reports = 0
-            self.outcomes = ["cycle_complete", "rx_complete"]
+            self.outcomes = ["idle", "rx_complete", "idle", "cycle_complete", "rx_complete"]
 
         def _start_rx(self):
-            self.control0_writes.append(1)
+            self.control0_writes.append(self._antenna)
 
         def _start_tracking(self):
-            self.control0_writes.append(0x11)
-
-        def _write_control0(self, val):
-            self.control0_writes.append(val)
+            self.control0_writes.append(0x10 | self._antenna)
 
         def _report_status0_and_irq_reg(self):
-            self.reports += 1
-            if self.reports % 2 == 1:
+            outcome = self.outcomes.pop(0)
+            if outcome == "idle":
                 self._rx_complete = False
                 self._cycle_complete = False
-                self._status_ok = False
-                return
-            outcome = self.outcomes.pop(0)
-            if outcome == "cycle_complete":
+            elif outcome == "cycle_complete":
+                # Real es100-wwvb 0.4.4 returns early without clearing _status_ok.
                 self._rx_complete = False
                 self._cycle_complete = True
-                self._status_ok = False
             else:
                 self._rx_complete = True
                 self._cycle_complete = False
                 self._status_ok = True
+                self._rx_antenna = f"Antenna{self._antenna}"
 
         def _wait_for_interrupt(self, timeout=None):
             return self._gpio.irq_wait(timeout)
@@ -216,9 +210,12 @@ def test_single_cycle_receive_stops_on_cycle_complete_and_preserves_microseconds
             del tracking
 
         def time(self):
+            self._antenna = 2 if self._antenna == 1 else 1
             self._es100_receive(False)
             if not self._status_ok:
                 return None
+            if not self._rx_complete:
+                raise ValueError("month must be in 1..12")
             return datetime(2026, 11, 2, 12, 0, 0, tzinfo=UTC)
 
         def system_time(self):
@@ -235,13 +232,21 @@ def test_single_cycle_receive_stops_on_cycle_complete_and_preserves_microseconds
 
     _install(es100_module, ES100)
     receiver = Es100Wwvb(11, 7, 1, 0x32)
-    with caplog.at_level(logging.INFO, logger="gps_wwvb.devices.wwvb"):
-        assert receiver.receive() is None
-    assert any("no reception on ant 1 (cycle complete)" in rec.message for rec in caplog.records)
-    assert receiver._dev.control0_writes == [1, 0]  # pylint: disable=protected-access
-    assert slept and slept[0] == pytest.approx(0.0365, abs=1e-4)
-
     reading = receiver.receive()
     assert reading is not None
     assert reading.antenna == 1
     assert reading.system_time.tzinfo is UTC
+    assert slept and slept[0] == pytest.approx(0.0365, abs=1e-4)
+
+    with caplog.at_level(logging.WARNING, logger="gps_wwvb.devices.wwvb"):
+        assert receiver.receive() is None
+    assert any(
+        rec.levelno == logging.WARNING and "no reception on ant 2 (cycle complete)" in rec.message
+        for rec in caplog.records
+    )
+    # The third receive() continues the cycle auto-started by reading CYCLE_COMPLETE,
+    # so _start_rx() is not called a third time.
+    continued = receiver.receive()
+    assert continued is not None
+    assert continued.antenna == 1
+    assert receiver._dev.control0_writes == [1, 2]  # pylint: disable=protected-access

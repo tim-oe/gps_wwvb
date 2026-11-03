@@ -22,27 +22,46 @@ TARGET_USER="${SUDO_USER:-$USER}"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 
 install_deps() {
-  sudo apt-get update
-  sudo apt-get install -y \
-    python3-venv \
-    python3-pip \
-    python3-smbus \
-    python3-rpi-lgpio \
-    python3-ephem \
-    python3-sysv-ipc \
-    i2c-tools \
+  local pkgs=(
+    python3-venv
+    python3-pip
+    python3-smbus
+    python3-rpi-lgpio
+    python3-ephem
+    python3-sysv-ipc
+    i2c-tools
     rsync
-  if command -v raspi-config >/dev/null 2>&1; then
+  )
+  local missing=()
+  local pkg
+  for pkg in "${pkgs[@]}"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      missing+=("$pkg")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    sudo apt-get update
+    sudo apt-get install -y "${missing[@]}"
+    echo "Packages installed for ${TARGET_USER}."
+  fi
+
+  if [[ ! -e /dev/i2c-1 ]] && command -v raspi-config >/dev/null 2>&1; then
     sudo raspi-config nonint do_i2c 0
   fi
-  if getent group i2c >/dev/null; then
-    sudo usermod -aG i2c "$TARGET_USER"
+
+  local user_groups
+  user_groups=" $(id -nG "$TARGET_USER") "
+  local group_added=0
+  local grp
+  for grp in i2c gpio; do
+    if getent group "$grp" >/dev/null && [[ "$user_groups" != *" ${grp} "* ]]; then
+      sudo usermod -aG "$grp" "$TARGET_USER"
+      group_added=1
+    fi
+  done
+  if [[ "$group_added" -eq 1 ]]; then
+    echo "Group changes apply to new logins. If 'status' says permission denied, log out and back in."
   fi
-  if getent group gpio >/dev/null; then
-    sudo usermod -aG gpio "$TARGET_USER"
-  fi
-  echo "Packages installed for ${TARGET_USER}."
-  echo "Group changes apply to new logins. If 'status' says permission denied, log out and back in."
   if [[ ! -e /dev/i2c-1 ]]; then
     echo "I2C is enabled in config. Reboot if /dev/i2c-1 is still missing."
   fi
@@ -75,11 +94,17 @@ if [[ ! -f "$ROOT/requirements.txt" ]]; then
   echo "No requirements.txt in $ROOT" >&2
   exit 1
 fi
-# Versions and hashes come from poetry.lock via `make requirements`.
-"$VENV/bin/pip" install --disable-pip-version-check --require-hashes -r "$ROOT/requirements.txt"
-# es100-wwvb is Pi-only (RPi.GPIO). 0.4.4 is the release close() is written against.
-"$VENV/bin/pip" install --disable-pip-version-check --no-deps 'es100-wwvb==0.4.4'
-"$VENV/bin/pip" install --disable-pip-version-check --force-reinstall --no-deps "$wheel"
+req_stamp="$VENV/.requirements.sha256"
+req_hash="$(sha256sum "$ROOT/requirements.txt" | awk '{print $1}')"
+if [[ ! -f "$req_stamp" || "$(cat "$req_stamp")" != "$req_hash" ]] \
+  || ! "$VENV/bin/python" -c "import es100" >/dev/null 2>&1; then
+  # Versions and hashes come from poetry.lock via `make requirements`.
+  "$VENV/bin/pip" install --disable-pip-version-check --require-hashes -r "$ROOT/requirements.txt"
+  # es100-wwvb is Pi-only (RPi.GPIO). 0.4.4 is the release close() is written against.
+  "$VENV/bin/pip" install --disable-pip-version-check --no-deps 'es100-wwvb==0.4.4'
+  printf '%s\n' "$req_hash" >"$req_stamp"
+fi
+"$VENV/bin/pip" install --disable-pip-version-check --no-index --force-reinstall --no-deps "$wheel"
 
 if [[ ! -f /etc/gps_wwvb.toml ]]; then
   sudo cp "$ROOT/gps_wwvb.toml" /etc/gps_wwvb.toml

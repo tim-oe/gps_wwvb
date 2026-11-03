@@ -25,6 +25,7 @@ _FRAME_TICK_S = 0.050
 _START_PHASE_S = 0.0465
 _FRAME_TIMEOUT_S = 144.0
 _TRACKING_TIMEOUT_S = 34.5
+_CONTINUE_STALE_S = 5.0
 
 
 class WwvbError(Exception):
@@ -49,7 +50,7 @@ class Es100Wwvb:
         except Exception as exc:
             # ES100Error is raised by the library. Importing it here would pull
             # in RPi.GPIO on the development machine, so match it by name.
-            if not _is_es100_error(exc):
+            if not _is_es100_error(exc) and not isinstance(exc, ValueError):
                 raise
             _log_no_reception(device, str(exc))
             return None
@@ -127,23 +128,59 @@ def _configure_device(device) -> None:
         "_wait_for_interrupt",
     )
     if all(callable(getattr(device, name, None)) for name in required):
+        continuing_at: float | None = None
 
         def _es100_receive(tracking: bool = False) -> None:
-            if not tracking:
-                _align_start()
-                device._start_rx()
-            else:
-                device._start_tracking()
-            device._report_status0_and_irq_reg()
-            if getattr(device, "_rx_complete", False):
-                return
+            nonlocal continuing_at
+            _clear_cycle_flags(device)
+            if tracking or continuing_at is None:
+                if not tracking:
+                    _align_start()
+                    device._start_rx()
+                else:
+                    device._start_tracking()
+                device._report_status0_and_irq_reg()
+                if getattr(device, "_rx_complete", False):
+                    continuing_at = None
+                    return
+            elif time.monotonic() - continuing_at >= _CONTINUE_STALE_S:
+                _drain_stale_cycle(device)
+                if getattr(device, "_rx_complete", False):
+                    continuing_at = None
+                    return
             timeout = _TRACKING_TIMEOUT_S if tracking else _FRAME_TIMEOUT_S
             device._wait_for_interrupt(timeout)
             device._report_status0_and_irq_reg()
-            if not getattr(device, "_rx_complete", False):
-                _stop_rx(device)
+            if getattr(device, "_rx_complete", False):
+                continuing_at = None
+                return
+            device._status_ok = False
+            if getattr(device, "_cycle_complete", False) and not tracking:
+                continuing_at = time.monotonic()
+            else:
+                continuing_at = None
 
         device._es100_receive = _es100_receive
+
+
+def _clear_cycle_flags(device) -> None:
+    # pylint: disable=protected-access
+    device._rx_complete = False
+    device._cycle_complete = False
+    device._status_ok = False
+    device._tracking_operation = False
+    device._rx_antenna = None
+
+
+def _drain_stale_cycle(device) -> None:
+    """Acknowledge a cycle that finished while the monitor waited out a maintenance gap."""
+    # pylint: disable=protected-access
+    device._report_status0_and_irq_reg()
+    if getattr(device, "_rx_complete", False):
+        return
+    if getattr(device, "_cycle_complete", False):
+        device._antenna = 2 if getattr(device, "_antenna", 1) == 1 else 1
+    _clear_cycle_flags(device)
 
 
 def _align_start() -> None:
@@ -151,16 +188,6 @@ def _align_start() -> None:
     delay = (_START_PHASE_S - (time.time() % _FRAME_TICK_S)) % _FRAME_TICK_S
     if delay > 0.0:
         time.sleep(delay)
-
-
-def _stop_rx(device) -> None:
-    """Clear ``CONTROL0`` so a failed cycle does not keep receiving into a maintenance gap."""
-    write_control0 = getattr(device, "_write_control0", None)
-    if callable(write_control0):
-        try:
-            write_control0(0)
-        except Exception:
-            logger.debug("failed to clear ES100 control0", exc_info=True)
 
 
 def _log_no_reception(device, detail: str | None = None) -> None:
@@ -172,9 +199,9 @@ def _log_no_reception(device, detail: str | None = None) -> None:
     else:
         reason = "no decode"
     if ant is not None:
-        logger.info("WWVB: no reception on ant %d (%s)", ant, reason)
+        logger.warning("WWVB: no reception on ant %d (%s)", ant, reason)
     else:
-        logger.info("WWVB: no reception (%s)", reason)
+        logger.warning("WWVB: no reception (%s)", reason)
 
 
 def _shutdown(device) -> Callable[[], None] | None:
