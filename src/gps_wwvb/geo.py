@@ -20,6 +20,9 @@ WWVB_LAT = 40.678062
 WWVB_LON = -105.046688
 WWVB_FRAME_SECONDS = 134.0
 CIVIL_TWILIGHT_DEG = -6.0
+# The two ferrite rods sit at ±45 deg from +X. Turning the board 45 deg puts
+# one rod broadside (90 deg) to WWVB and the other end-on in the null.
+ANTENNA_ROD_OFFSET_DEG = 45.0
 
 
 def great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -108,14 +111,52 @@ def antenna_is_aimed(heading_deg: float, bearing: float, tolerance_deg: float) -
     return abs(antenna_turn_deg(heading_deg, bearing)) <= tolerance_deg
 
 
-def antenna_turn_deg(heading_deg: float, bearing: float) -> float:
-    """Signed degrees to turn +X onto the bearing to WWVB.
+def optimized_antenna(
+    heading_deg: float,
+    bearing: float,
+    tolerance_deg: float,
+) -> int | None:
+    """Return 1 or 2 when one rod of the V is aimed broadside at WWVB.
 
-    The two ferrite rods form a V whose open end points along +X. That opening
-    should face the transmitter so the rods split the incoming signal. Positive
-    means turn the board clockwise.
+    The ferrite rods sit at ±45 deg from +X. When +X is 45 deg counterclockwise
+    of the bearing to WWVB (``turn`` near +45 deg clockwise), antenna 2 is
+    broadside to the transmitter and antenna 1 points into the null. When +X is
+    45 deg clockwise of the bearing (``turn`` near -45 deg counterclockwise),
+    antenna 1 is broadside and antenna 2 points into the null. Returns None
+    when neither single-rod orientation is within ``tolerance_deg``.
     """
-    return signed_delta_deg(heading_deg, bearing % 360.0)
+    turn = antenna_turn_deg(heading_deg, bearing)
+    if abs(turn - ANTENNA_ROD_OFFSET_DEG) <= tolerance_deg:
+        return 2
+    if abs(turn + ANTENNA_ROD_OFFSET_DEG) <= tolerance_deg:
+        return 1
+    return None
+
+
+def antenna_target_deg(bearing: float, antenna: int | None = None) -> float:
+    """Target +X true heading for V-split (None) or broadside on antenna 1 or 2."""
+    if antenna is None:
+        return bearing % 360.0
+    if antenna == 1:
+        return (bearing + ANTENNA_ROD_OFFSET_DEG) % 360.0
+    if antenna == 2:
+        return (bearing - ANTENNA_ROD_OFFSET_DEG) % 360.0
+    raise ValueError(f"antenna must be None, 1, or 2, not {antenna!r}")
+
+
+def antenna_turn_deg(
+    heading_deg: float,
+    bearing: float,
+    antenna: int | None = None,
+) -> float:
+    """Signed degrees to turn +X onto the target heading for ``antenna``.
+
+    When ``antenna`` is None, the target is the bearing to WWVB so the open end
+    of the V (+X) splits the incoming signal across both rods. When ``antenna``
+    is 1 or 2, the target is offset by ±45 deg so that rod is broadside to WWVB.
+    Positive means turn the board clockwise.
+    """
+    return signed_delta_deg(heading_deg, antenna_target_deg(bearing, antenna))
 
 
 def turn_direction(turn_deg: float) -> str:

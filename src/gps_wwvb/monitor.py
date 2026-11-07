@@ -19,6 +19,7 @@ from gps_wwvb.geo import (
     antenna_turn_deg,
     format_turn,
     is_night,
+    optimized_antenna,
     propagation,
     seconds_until_on_air,
     true_heading_deg,
@@ -438,20 +439,43 @@ class Monitor:
             format_number(bearing, ".1f"),
             format_turn(turn),
         )
-        if (
-            turn is not None
-            and heading_true is not None
-            and bearing is not None
-            and not antenna_is_aimed(heading_true, bearing, ANTENNA_AIM_TOLERANCE_DEG)
-        ):
-            way = turn_direction(turn)
-            logger.warning(
-                "antenna is %.1f deg off WWVB; turn %s (tolerance ±%.0f)",
-                abs(turn),
-                way,
-                ANTENNA_AIM_TOLERANCE_DEG,
-            )
+        self._apply_antenna_aim(heading_true, bearing, turn)
         return True
+
+    def _apply_antenna_aim(
+        self,
+        heading_true: float | None,
+        bearing: float | None,
+        turn: float | None,
+    ) -> None:
+        if turn is None or heading_true is None or bearing is None:
+            return
+        if antenna_is_aimed(heading_true, bearing, ANTENNA_AIM_TOLERANCE_DEG):
+            self._set_wwvb_antenna(None)
+            return
+        antenna = optimized_antenna(heading_true, bearing, ANTENNA_AIM_TOLERANCE_DEG)
+        if antenna is not None:
+            null_antenna = 1 if antenna == 2 else 2
+            self._set_wwvb_antenna(antenna)
+            logger.info(
+                "Antenna: optimized for antenna %d (skipping null antenna %d)",
+                antenna,
+                null_antenna,
+            )
+            return
+        self._set_wwvb_antenna(None)
+        way = turn_direction(turn)
+        logger.warning(
+            "antenna is %.1f deg off WWVB; turn %s (tolerance ±%.0f)",
+            abs(turn),
+            way,
+            ANTENNA_AIM_TOLERANCE_DEG,
+        )
+
+    def _set_wwvb_antenna(self, antenna: int | None) -> None:
+        set_antenna = getattr(self.wwvb, "set_antenna", None)
+        if callable(set_antenna):
+            set_antenna(antenna)
 
     def _wait_for_gps(self) -> GpsFix | None:
         """Keep sampling until the fix has a position and a resolved time."""

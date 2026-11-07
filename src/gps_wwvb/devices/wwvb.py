@@ -26,6 +26,10 @@ _START_PHASE_S = 0.0465
 _FRAME_TIMEOUT_S = 144.0
 _TRACKING_TIMEOUT_S = 34.5
 _CONTINUE_STALE_S = 5.0
+# ES100 CONTROL0 register bits: 0x03 is Antenna 2 only, 0x05 is Antenna 1 only.
+_CONTROL0_START = 0x01
+_CONTROL0_ANT1_OFF = 0x02
+_CONTROL0_ANT2_OFF = 0x04
 
 
 class WwvbError(Exception):
@@ -33,13 +37,29 @@ class WwvbError(Exception):
 
 
 class Es100Wwvb:
-    def __init__(self, irq: int, en: int, bus: int, address: int):
+    def __init__(
+        self,
+        irq: int,
+        en: int,
+        bus: int,
+        address: int,
+        *,
+        antenna: int | None = None,
+    ):
         self.irq = irq
         self.en = en
         self.bus = bus
         self.address = address
+        self.antenna: int | None = None
+        self.set_antenna(antenna)
         self._dev = None
         self.exhausted = False
+
+    def set_antenna(self, antenna: int | None) -> None:
+        """Lock reception to antenna 1 or 2, or pass None to alternate both."""
+        if antenna not in (None, 1, 2):
+            raise ValueError(f"antenna must be None, 1, or 2, not {antenna!r}")
+        self.antenna = antenna
 
     def receive(self) -> WwvbReading | None:
         device = self._device()
@@ -102,11 +122,14 @@ class Es100Wwvb:
                 self._dev = ES100(irq=self.irq, en=self.en, bus=self.bus, address=self.address)
             except Exception as exc:
                 raise WwvbError(f"failed to open ES100: {exc}") from exc
-            _configure_device(self._dev)
+            _configure_device(self._dev, lambda: self.antenna)
         return self._dev
 
 
-def _configure_device(device) -> None:
+def _configure_device(
+    device,
+    get_antenna: Callable[[], int | None] = lambda: None,
+) -> None:
     """Make es100-wwvb 0.4.4 run one cycle per ``time()`` call with microsecond IRQ timestamps."""
     # pylint: disable=protected-access
     gpio = getattr(device, "_gpio", None)
@@ -129,14 +152,21 @@ def _configure_device(device) -> None:
     )
     if all(callable(getattr(device, name, None)) for name in required):
         continuing_at: float | None = None
+        active_locked: int | None = None
 
         def _es100_receive(tracking: bool = False) -> None:
-            nonlocal continuing_at
+            nonlocal continuing_at, active_locked
+            locked = get_antenna()
+            if locked in (1, 2):
+                device._antenna = locked
+            if locked != active_locked:
+                continuing_at = None
             _clear_cycle_flags(device)
             if tracking or continuing_at is None:
+                active_locked = locked
                 if not tracking:
                     _align_start()
-                    device._start_rx()
+                    _start_rx(device, locked)
                 else:
                     device._start_tracking()
                 device._report_status0_and_irq_reg()
@@ -144,7 +174,7 @@ def _configure_device(device) -> None:
                     continuing_at = None
                     return
             elif time.monotonic() - continuing_at >= _CONTINUE_STALE_S:
-                _drain_stale_cycle(device)
+                _drain_stale_cycle(device, locked)
                 if getattr(device, "_rx_complete", False):
                     continuing_at = None
                     return
@@ -163,6 +193,20 @@ def _configure_device(device) -> None:
         device._es100_receive = _es100_receive
 
 
+def _start_rx(device, locked: int | None) -> None:
+    """Start a frame reception, disabling the null antenna when ``locked`` is 1 or 2."""
+    # pylint: disable=protected-access
+    write_control0 = getattr(device, "_write_control0", None)
+    if locked in (1, 2) and callable(write_control0):
+        off_bit = _CONTROL0_ANT2_OFF if locked == 1 else _CONTROL0_ANT1_OFF
+        write_control0(_CONTROL0_START | off_bit)
+        report = getattr(device, "_report_control0_reg", None)
+        if callable(report):
+            report()
+        return
+    device._start_rx()
+
+
 def _clear_cycle_flags(device) -> None:
     # pylint: disable=protected-access
     device._rx_complete = False
@@ -172,14 +216,17 @@ def _clear_cycle_flags(device) -> None:
     device._rx_antenna = None
 
 
-def _drain_stale_cycle(device) -> None:
+def _drain_stale_cycle(device, locked: int | None = None) -> None:
     """Acknowledge a cycle that finished while the monitor waited out a maintenance gap."""
     # pylint: disable=protected-access
     device._report_status0_and_irq_reg()
     if getattr(device, "_rx_complete", False):
         return
     if getattr(device, "_cycle_complete", False):
-        device._antenna = 2 if getattr(device, "_antenna", 1) == 1 else 1
+        if locked in (1, 2):
+            device._antenna = locked
+        else:
+            device._antenna = 2 if getattr(device, "_antenna", 1) == 1 else 1
     _clear_cycle_flags(device)
 
 

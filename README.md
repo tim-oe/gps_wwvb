@@ -29,7 +29,7 @@ The ES100 has two GPIO lines besides I2C. [es100-wwvb](https://pypi.org/project/
 
 The library takes `GPIO.BOARD` numbers, so the config stores physical pins 11 and 7. GPIO 17 and GPIO 4 leave the GPS HAT's PPS (BCM18), INT (BCM27), and UART (`/dev/ttyS0`, physical pins 8 and 10) free for `gpsd`.
 
-The ES100 has two ferrite rods in a V. The open end of the V points along the LSM303 +X axis, and that opening should face WWVB so the rods split the signal. Heading 0 means +X points magnetic north, increasing clockwise. Declination comes from the World Magnetic Model at the GPS fix (east positive): `true = magnetic + declination`.
+The ES100 has two ferrite rods in a V. The open end of the V points along the LSM303 +X axis, and that opening should face WWVB so the rods split the signal. Heading 0 means +X points magnetic north, increasing clockwise. Declination comes from the World Magnetic Model at the GPS fix (east positive): `true = magnetic + declination`. See [docs/orientation.md](docs/orientation.md) for details on compass readings, V-split vs. single-rod broadside aiming at long distances, and recalibrating after moving the receiver.
 
 WWVB is off the air from minute 10 to 16 and from minute 40 to 46 of each hour. The monitor logs those windows and does not start a reception.
 
@@ -59,6 +59,7 @@ Compass offsets and the `calibrated` flag for that system file are stored in `/v
 gps-wwvb status
 gps-wwvb run
 gps-wwvb compass
+gps-wwvb compass --ant 2
 gps-wwvb orientate
 gps-wwvb --config /etc/gps_wwvb.toml calibrate
 gps-wwvb calibrate-compass --duration 30
@@ -93,6 +94,32 @@ make dev-setup
 That installs the apt packages (`python3-rpi-lgpio` provides `RPi.GPIO`; the PyPI `RPi.GPIO` build has a broken `wait_for_edge` on this kernel), enables I2C, creates `~/src/gps_wwvb-dev/.venv` with `--system-site-packages`, and installs the locked requirements from `requirements.txt`, `es100-wwvb` 0.4.4 with `--no-deps`, plus an editable install of this package. Nothing is compiled on the Pi. `make requirements` regenerates `requirements.txt` from `poetry.lock`.
 
 Log out of the Pi and back in if a later command reports a permissions error on `/dev/i2c-1`. New group membership does not apply to the current session.
+
+### Enabling Galileo on the MAX-M8Q
+
+The u-blox MAX-M8Q tracks up to 3 major GNSS constellations concurrently (GPS + Galileo on 1575.42 MHz, plus either GLONASS on 1602 MHz or BeiDou on 1561 MHz), along with QZSS and SBAS. By default, the module enables GPS + GLONASS + QZSS + SBAS.
+
+Because `gpsd` runs in read-only mode (`-b`) and attaches both `/dev/ttyS0` and `/dev/pps0`, configure the receiver directly over `/dev/ttyS0` with `gpsd` briefly stopped and save the configuration to battery-backed RAM (BBR):
+
+```bash
+make gnss-setup
+```
+
+Or manually on the Pi:
+
+```bash
+sudo systemctl stop gpsd.socket gpsd.service
+sudo ubxtool -f /dev/ttyS0 -s 9600 -e GALILEO
+sudo ubxtool -f /dev/ttyS0 -s 9600 -p CFG-GNSS
+sudo ubxtool -f /dev/ttyS0 -s 9600 -p SAVE
+sudo systemctl start gpsd.socket gpsd.service
+```
+
+References:
+- [docs/board-configuration.md](docs/board-configuration.md) — HAT jumpers, dimming/controlling onboard LEDs (`CFG-TP5`), and other MAX-M8Q serial settings (`MODEL,2` Stationary mode, `CFG-TP5`, `RATE`, diagnostics).
+- [`ubxtool(1)` manual (`gpsd`)](https://gpsd.gitlab.io/gpsd/ubxtool.html) and [`ubxtool` examples](https://gpsd.gitlab.io/gpsd/ubxtool-examples.html) — covers `-e`/`-d` (`GPS`, `GLONASS`, `GALILEO`, `BEIDOU`, `SBAS`, `QZSS`), `-p CFG-GNSS`, and `-p SAVE`.
+- [u-blox 8 / u-blox M8 Receiver Description Including Protocol Specification (UBX-13003221)](https://content.u-blox.com/sites/default/files/products/documents/u-blox8-M8_ReceiverDescrProtSpec_UBX-13003221.pdf) — Section 4 (*GNSS configuration*, concurrent constellation rules) and Sections 32.10.10 / 32.10.3 (`UBX-CFG-GNSS` and `UBX-CFG-CFG`).
+- [MAX-M8 series Data Sheet (UBX-16000093)](https://content.u-blox.com/sites/default/files/MAX-M8-FW3_DataSheet_UBX-16000093.pdf) — RF front-end and default concurrent GNSS settings for the MAX-M8Q.
 
 ## Day to day
 

@@ -9,11 +9,13 @@ from gps_wwvb.geo import (
     WWVB_LAT,
     WWVB_LON,
     antenna_is_aimed,
+    antenna_target_deg,
     antenna_turn_deg,
     bearing_deg,
     format_turn,
     is_night,
     magnetic_declination_deg,
+    optimized_antenna,
     propagation,
     seconds_until_on_air,
     solar_elevation_deg,
@@ -79,6 +81,28 @@ def test_antenna_turn_points_the_open_end_at_wwvb():
     assert antenna_turn_deg(343.0, 283.6) == pytest.approx(-59.4, abs=0.05)
     assert antenna_is_aimed(283.6, 283.6, 5.0)
     assert not antenna_is_aimed(343.0, 283.6, 5.0)
+
+
+def test_optimized_antenna_identifies_broadside_rod():
+    # Bearing 278.1 deg: +X at 231.8 deg (turn +46.3 deg clockwise) puts antenna 2 broadside.
+    assert optimized_antenna(231.8, 278.1, 15.0) == 2
+    # +X at 323.1 deg (turn -45.0 deg counterclockwise) puts antenna 1 broadside.
+    assert optimized_antenna(323.1, 278.1, 15.0) == 1
+    # Standard V-split and far off-aim return None.
+    assert optimized_antenna(278.1, 278.1, 15.0) is None
+    assert optimized_antenna(180.0, 278.1, 15.0) is None
+
+
+def test_antenna_target_and_turn_for_selected_antenna():
+    assert antenna_target_deg(278.1, None) == pytest.approx(278.1)
+    assert antenna_target_deg(278.1, 1) == pytest.approx(323.1)
+    assert antenna_target_deg(278.1, 2) == pytest.approx(233.1)
+    assert antenna_turn_deg(323.1, 278.1, 1) == pytest.approx(0.0, abs=1e-9)
+    assert antenna_turn_deg(233.1, 278.1, 2) == pytest.approx(0.0, abs=1e-9)
+    assert antenna_turn_deg(278.1, 278.1, 1) == pytest.approx(45.0)
+    assert antenna_turn_deg(278.1, 278.1, 2) == pytest.approx(-45.0)
+    with pytest.raises(ValueError, match="antenna must be None, 1, or 2"):
+        antenna_target_deg(278.1, 3)
 
 
 def test_maintenance_windows_are_the_scheduled_breaks():

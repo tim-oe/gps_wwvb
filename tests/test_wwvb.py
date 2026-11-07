@@ -250,3 +250,98 @@ def test_single_cycle_receive_stops_on_cycle_complete_and_preserves_microseconds
     assert continued is not None
     assert continued.antenna == 1
     assert receiver._dev.control0_writes == [1, 2]  # pylint: disable=protected-access
+
+
+def test_locked_antenna_disables_the_null_antenna_and_never_toggles(
+    es100_module, monkeypatch, caplog
+):
+    monkeypatch.setattr("gps_wwvb.devices.wwvb.time.time", lambda: 100.0465)
+    monkeypatch.setattr("gps_wwvb.devices.wwvb.time.sleep", lambda _s: None)
+
+    class ES100:
+        def __init__(self, **_kwargs):
+            self._antenna = 1
+            self._rx_antenna = None
+            self._rx_complete = False
+            self._cycle_complete = False
+            self._status_ok = False
+            self._system_time_received = datetime(2026, 11, 7, 4, 35, 57, tzinfo=UTC)
+            self.control0_writes: list[int] = []
+            self.reports = 0
+            self.outcomes = ["idle", "cycle_complete", "rx_complete"]
+
+        def _start_rx(self):
+            raise AssertionError("_start_rx would enable both antennas")
+
+        def _start_tracking(self):
+            return None
+
+        def _write_control0(self, val):
+            self.control0_writes.append(val)
+
+        def _report_control0_reg(self):
+            self.reports += 1
+
+        def _report_status0_and_irq_reg(self):
+            outcome = self.outcomes.pop(0)
+            if outcome == "idle":
+                self._rx_complete = False
+                self._cycle_complete = False
+            elif outcome == "cycle_complete":
+                self._rx_complete = False
+                self._cycle_complete = True
+            else:
+                self._rx_complete = True
+                self._cycle_complete = False
+                self._status_ok = True
+                self._rx_antenna = f"Antenna{self._antenna}"
+
+        def _wait_for_interrupt(self, timeout=None):
+            del timeout
+            return True
+
+        def _es100_receive(self, tracking=False):
+            del tracking
+
+        def time(self):
+            # Real es100-wwvb 0.4.4 toggles _antenna before calling _es100_receive.
+            self._antenna = 2 if self._antenna == 1 else 1
+            self._es100_receive(False)
+            if not self._status_ok:
+                return None
+            return datetime(2026, 11, 7, 4, 35, 57, tzinfo=UTC)
+
+        def system_time(self):
+            return self._system_time_received
+
+        def rx_antenna(self):
+            return self._rx_antenna
+
+        def is_presently_dst(self):
+            return False
+
+        def leap_second(self):
+            return None
+
+    _install(es100_module, ES100)
+    receiver = Es100Wwvb(11, 7, 1, 0x32, antenna=2)
+    with pytest.raises(ValueError, match="antenna must be None, 1, or 2"):
+        receiver.set_antenna(3)
+    with caplog.at_level(logging.WARNING, logger="gps_wwvb.devices.wwvb"):
+        assert receiver.receive() is None
+    assert any("no reception on ant 2 (cycle complete)" in rec.message for rec in caplog.records)
+    # Second receive() continues on antenna 2 without toggling to antenna 1.
+    reading = receiver.receive()
+    assert reading is not None
+    assert reading.antenna == 2
+    # 0x03 = START (0x01) | ANT1_OFF (0x02), i.e. Antenna 2 only.
+    assert receiver._dev.control0_writes == [0x03]  # pylint: disable=protected-access
+    assert receiver._dev.reports == 1  # pylint: disable=protected-access
+
+    # Switching to antenna 1 writes 0x05 = START (0x01) | ANT2_OFF (0x04).
+    receiver.set_antenna(1)
+    receiver._dev.outcomes = ["idle", "rx_complete"]  # pylint: disable=protected-access
+    reading1 = receiver.receive()
+    assert reading1 is not None
+    assert reading1.antenna == 1
+    assert receiver._dev.control0_writes == [0x03, 0x05]  # pylint: disable=protected-access

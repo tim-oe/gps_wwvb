@@ -5,12 +5,12 @@ PI_REL_DIR ?= ~/src/gps_wwvb
 DURATION ?= 60
 ARGS ?= run
 
-.PHONY: help test coverage lint format requirements run-sim dev-setup dev-deps sync remote watch \
+.PHONY: help test coverage lint format requirements run-sim dev-setup dev-deps gnss-setup sync remote watch \
 	fetch-recordings debug build deploy remote-status logs svc-start svc-stop
 
 help:
 	@echo "Local:   make test | coverage | lint | format | requirements | run-sim"
-	@echo "Pi dev:  make dev-setup | dev-deps | sync | remote ARGS='status' | watch | fetch-recordings | debug ARGS='status'"
+	@echo "Pi dev:  make dev-setup | dev-deps | gnss-setup | sync | remote ARGS='status' | watch | fetch-recordings | debug ARGS='status'"
 	@echo "Release: make build | deploy | remote-status | logs | svc-start | svc-stop"
 
 test:
@@ -43,6 +43,9 @@ dev-setup:
 
 dev-deps: sync
 	ssh -o BatchMode=yes $(PI_HOST) 'cd $(PI_DEV_DIR) && if [[ ! -x .venv/bin/pip ]]; then echo "No dev venv. Run make dev-setup first." >&2; exit 1; fi && .venv/bin/pip install --disable-pip-version-check --require-hashes -r requirements.txt && .venv/bin/pip install --disable-pip-version-check --no-deps -e .'
+
+gnss-setup:
+	ssh -o BatchMode=yes $(PI_HOST) 'set -e; trap "sudo systemctl start gpsd.socket gpsd.service" EXIT; sudo systemctl stop gpsd.socket gpsd.service; sudo ubxtool -f /dev/ttyS0 -s 9600 -e GALILEO; sudo ubxtool -f /dev/ttyS0 -s 9600 -p CFG-GNSS; sudo ubxtool -f /dev/ttyS0 -s 9600 -p SAVE'
 
 sync:
 	bash scripts/sync_dev.sh $(PI_HOST) $(PI_DEV_DIR)

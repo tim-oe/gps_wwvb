@@ -24,13 +24,15 @@ from gps_wwvb.devices.compass import CompassError, hard_iron_fit, make_reading
 from gps_wwvb.devices.factory import Devices, backend_name, close_devices, open_devices
 from gps_wwvb.geo import (
     antenna_is_aimed,
+    antenna_target_deg,
     antenna_turn_deg,
     format_turn,
     magnetic_declination_deg,
+    optimized_antenna,
     propagation,
     true_heading_deg,
 )
-from gps_wwvb.monitor import Monitor, format_number
+from gps_wwvb.monitor import ANTENNA_AIM_TOLERANCE_DEG, Monitor, format_number
 from gps_wwvb.recording import RecordingError, record_devices
 from gps_wwvb.util.logging import init_logging
 
@@ -165,6 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="seconds between status refreshes",
     )
+    compass.add_argument(
+        "--ant",
+        type=int,
+        choices=(1, 2),
+        default=None,
+        help="orientate for broadside reception on antenna 1 or 2",
+    )
     compass.set_defaults(func=cmd_compass)
 
     orientate = sub.add_parser(
@@ -173,6 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the heading and how far +X is from WWVB",
     )
     orientate.add_argument("--interval", type=float, default=0.2, help="seconds between samples")
+    orientate.add_argument(
+        "--ant",
+        type=int,
+        choices=(1, 2),
+        default=None,
+        help="orientate for broadside reception on antenna 1 or 2",
+    )
     orientate.set_defaults(func=cmd_orientate)
 
     calibrate = sub.add_parser(
@@ -263,11 +279,20 @@ def cmd_status(args, config, devices) -> int:
     if fix is not None and fix.position_ok and fix.lat is not None and fix.lon is not None:
         distance, bearing, delay = propagation(fix.lat, fix.lon)
         turn = None if heading_true is None else antenna_turn_deg(heading_true, bearing)
+        antenna = (
+            None
+            if heading_true is None
+            else optimized_antenna(heading_true, bearing, ANTENNA_AIM_TOLERANCE_DEG)
+        )
+        set_antenna = getattr(wwvb, "set_antenna", None)
+        if callable(set_antenna):
+            set_antenna(antenna)
+        opt = "" if antenna is None else f"  (optimized for antenna {antenna})"
         print(
             f"WWVB bearing {format_number(bearing, '.1f')} deg  "
             f"distance {format_number(distance, '.1f')} km  "
             f"travel {format_number(delay * 1000, '.3f')} ms  "
-            f"antenna turn {format_turn(turn)}"
+            f"antenna turn {format_turn(turn)}{opt}"
         )
     else:
         print("WWVB bearing: waiting for a GPS position")
@@ -311,33 +336,32 @@ def cmd_run(args, config, devices) -> int:
 
 def cmd_compass(args, config, devices) -> int:
     del config
-    gps, compass, _wwvb = devices
-    fix = _call("GPS", gps.read_fix, 2.0)
-    bearing = _bearing(fix)
-    if bearing is None:
-        print("No GPS position yet; showing magnetic heading only.")
-    else:
-        _announce_bearing(fix, bearing)
+    gps, compass, wwvb = devices
+    ant = getattr(args, "ant", None)
+    _release_receiver(wwvb)
     try:
+        fix = _wait_for_gps_fix(gps)
+        if fix is None:
+            return 1
+        _distance, bearing, _delay = propagation(fix.lat, fix.lon)
+        _announce_bearing(fix, bearing, ant)
+        target = antenna_target_deg(bearing, ant)
+        ant_field = "" if ant is None else f"ant {ant} {format_number(target, '.1f')}  "
         while True:
-            if bearing is None:
-                fix = _call("GPS", gps.read_fix, 2.0)
-                bearing = _bearing(fix)
-                if bearing is not None:
-                    _announce_bearing(fix, bearing)
             sample = compass.read()
             if sample is None:
                 _finish_status()
                 return 0
             heading_true, declination = _true_heading(sample.heading_mag, fix)
             turn = None
-            if bearing is not None and heading_true is not None:
-                turn = antenna_turn_deg(heading_true, bearing)
+            if heading_true is not None:
+                turn = antenna_turn_deg(heading_true, bearing, ant)
             _write_status(
                 f"heading mag {format_number(sample.heading_mag, '.1f')}  "
                 f"true {format_number(heading_true, '.1f')}  "
                 f"dec {format_number(declination, '+.1f')}  "
                 f"brg {format_number(bearing, '.1f')}  "
+                f"{ant_field}"
                 f"turn {format_turn(turn)}"
             )
             time.sleep(args.interval)
@@ -346,46 +370,48 @@ def cmd_compass(args, config, devices) -> int:
         return 130
 
 
-def _bearing(fix) -> float | None:
-    if fix is None or not fix.position_ok or fix.lat is None or fix.lon is None:
-        return None
-    _distance, bearing, _delay = propagation(fix.lat, fix.lon)
-    return bearing
-
-
-def _announce_bearing(fix, bearing: float) -> None:
+def _announce_bearing(fix, bearing: float, ant: int | None = None) -> None:
     distance, _bearing, _delay = propagation(fix.lat, fix.lon)
     _heading, declination = _true_heading(0.0, fix)
+    if ant is None:
+        aim_note = "(open end of the V, along +X, points at WWVB)"
+    else:
+        target = antenna_target_deg(bearing, ant)
+        aim_note = f"(antenna {ant} broadside: point +X at {target:.1f} deg)"
     print(
         f"WWVB bearing {bearing:.1f} deg at {distance:.1f} km"
         f"  declination {format_number(declination, '+.1f')} deg"
-        "  (open end of the V, along +X, points at WWVB)"
+        f"  {aim_note}"
     )
 
 
 def cmd_orientate(args, config, devices) -> int:
     gps, compass, wwvb = devices
+    ant = getattr(args, "ant", None)
     _release_receiver(wwvb)
     if not config.compass_calibrated:
         print("The open end is not marked on WWVB yet. Off is the turn still required.")
-    fix = gps.read_fix(timeout=5.0)
-    bearing = None
-    if fix is not None and fix.position_ok and fix.lat is not None and fix.lon is not None:
+    try:
+        fix = _wait_for_gps_fix(gps)
+        if fix is None:
+            return 1
         _distance, bearing, _delay = propagation(fix.lat, fix.lon)
         _heading, declination = _true_heading(0.0, fix)
+        if ant is None:
+            aim_prompt = "Point the open end of the V (+X) there."
+        else:
+            target = antenna_target_deg(bearing, ant)
+            aim_prompt = f"Antenna {ant} broadside: point +X at {target:.1f} deg."
         print(
             f"WWVB bearing {bearing:.1f} deg. Declination {format_number(declination, '+.1f')} deg."
-            " Point the open end of the V (+X) there."
+            f" {aim_prompt}"
         )
-    else:
-        print("No GPS position yet; the set heading is unknown.")
-    try:
         while True:
             sample = compass.read()
             if sample is None:
                 return 0
             heading_true, _declination = _true_heading(sample.heading_mag, fix)
-            print(format_orientation(heading_true, bearing), flush=True)
+            print(format_orientation(heading_true, bearing, ant), flush=True)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 130
@@ -416,12 +442,17 @@ def _true_heading(heading_mag: float | None, fix) -> tuple[float | None, float |
     return true_heading_deg(heading_mag, lat, lon, alt, when)
 
 
-def format_orientation(heading: float | None, bearing: float | None) -> str:
-    """Pointing, the bearing to WWVB, and the degrees still to turn."""
+def format_orientation(
+    heading: float | None,
+    bearing: float | None,
+    antenna: int | None = None,
+) -> str:
+    """Pointing, the target heading for ``antenna``, and the degrees still to turn."""
     if heading is None or bearing is None:
         return f"pointing {format_number(heading, '.1f')} deg  set n/a  off n/a"
-    off = antenna_turn_deg(heading, bearing)
-    return f"pointing {heading:.1f} deg  set {bearing % 360.0:.1f} deg  off {format_turn(off)}"
+    target = antenna_target_deg(bearing, antenna)
+    off = antenna_turn_deg(heading, bearing, antenna)
+    return f"pointing {heading:.1f} deg  set {target:.1f} deg  off {format_turn(off)}"
 
 
 def cmd_calibrate(args, config, devices) -> int:
@@ -542,11 +573,31 @@ def _verify_antenna(args, config, gps, compass, offset, scale) -> int:
     return 1
 
 
+def _has_position(fix) -> bool:
+    return fix is not None and fix.position_ok and fix.lat is not None and fix.lon is not None
+
+
+def _wait_for_gps_fix(gps):
+    """Keep reading GPS until a fix with a position arrives."""
+    told: float | None = None
+    while True:
+        fix = _call("GPS", gps.read_fix, 2.0)
+        if _has_position(fix):
+            return fix
+        if getattr(gps, "exhausted", False):
+            return None
+        now = time.monotonic()
+        if told is None or now - told >= 30.0:
+            print("Waiting for GPS fix...", flush=True)
+            told = now
+        time.sleep(1.0)
+
+
 def _wait_for_fix(gps, timeout: float):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         fix = gps.read_fix(timeout=min(1.0, max(0.0, deadline - time.monotonic())))
-        if fix is not None and fix.position_ok and fix.lat is not None and fix.lon is not None:
+        if _has_position(fix):
             return fix
         time.sleep(0.05)
     return None

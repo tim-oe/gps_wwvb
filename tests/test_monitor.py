@@ -20,6 +20,7 @@ from gps_wwvb.cli import (
     build_parser,
     cmd_calibrate,
     cmd_compass,
+    cmd_orientate,
     format_orientation,
     main,
 )
@@ -347,6 +348,33 @@ def test_startup_warns_when_the_antenna_is_more_than_15_degrees_off(tmp_path: Pa
     assert any("counterclockwise" in message and "tolerance ±15" in message for message in warnings)
 
 
+def test_startup_selects_single_antenna_when_rotated_broadside(tmp_path: Path, caplog):
+    fix = _sjc_fix()
+    _distance, bearing, _travel = propagation(*SJC)
+    declination = magnetic_declination_deg(SJC[0], SJC[1], 18.9, fix.utc)
+    # 45 deg counterclockwise of bearing (turn +45 deg clockwise) puts antenna 2 broadside.
+    mag_ant2 = (bearing - 45.0 - declination) % 360.0
+    wwvb = _ScriptedWwvb([_reading()])
+    monitor = Monitor(
+        _Gps(fix),
+        _Compass(heading_mag=mag_ant2),
+        wwvb,
+        log_path=tmp_path / "log.jsonl",
+        log_format="jsonl",
+        echo=False,
+    )
+    monitor.clock = lambda: datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+    with caplog.at_level(logging.INFO):
+        monitor.run(threading.Event(), max_readings=1)
+    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    infos = [record.message for record in caplog.records if record.levelno == logging.INFO]
+    assert not warnings
+    assert any(
+        "Antenna: optimized for antenna 2 (skipping null antenna 1)" in message for message in infos
+    )
+    assert wwvb.selected_antenna == 2
+
+
 def test_a_missed_gps_read_is_warned_once(caplog):
     monitor = Monitor(
         _Gps(None), _Compass(), _Wwvb(), log_path=None, log_format="jsonl", echo=False
@@ -542,9 +570,38 @@ def test_run_does_not_start_until_the_antenna_is_calibrated(tmp_path, monkeypatc
 def test_compass_refresh_defaults_to_one_second():
     args = build_parser().parse_args(["compass"])
     assert args.interval == 1.0
+    assert args.ant is None
+    assert build_parser().parse_args(["compass", "--ant", "1"]).ant == 1
+    assert build_parser().parse_args(["compass", "--ant", "2"]).ant == 2
 
 
-def test_compass_status_rewrites_one_line(monkeypatch):
+def test_compass_ant_flag_orientates_for_the_selected_antenna(monkeypatch):
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    out = _Tty()
+    monkeypatch.setattr("gps_wwvb.cli.sys.stdout", out)
+    monkeypatch.setattr("gps_wwvb.cli.time.sleep", lambda _seconds: None)
+    fix = _sjc_fix()
+    _distance, bearing, _travel = propagation(*SJC)
+    declination = magnetic_declination_deg(SJC[0], SJC[1], 18.9, fix.utc)
+    mag_ant2 = (bearing - 45.0 - declination) % 360.0
+    readings = [CompassReading(mag_ant2, (bearing - 45.0) % 360.0, 0, 0, 1, 1, 0, 0, 0.0)]
+
+    class _Script:
+        def read(self):
+            return readings.pop(0) if readings else None
+
+    args = SimpleNamespace(interval=1.0, ant=2)
+    assert cmd_compass(args, None, (_Gps(fix), _Script(), None)) == 0
+    text = out.getvalue()
+    assert f"(antenna 2 broadside: point +X at {(bearing - 45.0) % 360.0:.1f} deg)" in text
+    assert f"ant 2 {(bearing - 45.0) % 360.0:.1f}" in text
+    assert "turn 0.0 deg" in text
+
+
+def test_compass_waits_for_a_gps_fix_and_rewrites_one_line(monkeypatch):
     class _Tty(io.StringIO):
         def isatty(self):
             return True
@@ -553,24 +610,34 @@ def test_compass_status_rewrites_one_line(monkeypatch):
     slept = []
     monkeypatch.setattr("gps_wwvb.cli.sys.stdout", out)
     monkeypatch.setattr("gps_wwvb.cli.time.sleep", slept.append)
+    fixes = [None, _empty_fix(), _sjc_fix()]
     readings = [
         CompassReading(10.0, 10.0, 0, 0, 1, 1, 0, 0, 0.0),
         CompassReading(20.0, 20.0, 0, 0, 1, 1, 0, 0, 0.0),
     ]
 
-    class _Script:
+    class _ScriptGps:
+        exhausted = False
+
+        def read_fix(self, timeout: float = 2.0):
+            del timeout
+            return fixes.pop(0) if fixes else _sjc_fix()
+
+    class _ScriptCompass:
         def read(self):
+            assert not fixes, "compass was read before GPS had a fix"
             return readings.pop(0) if readings else None
 
     args = SimpleNamespace(interval=1.0)
-    assert cmd_compass(args, None, (_Gps(None), _Script(), None)) == 0
+    assert cmd_compass(args, None, (_ScriptGps(), _ScriptCompass(), None)) == 0
     text = out.getvalue()
-    assert text.startswith("No GPS position yet; showing magnetic heading only.\n")
+    assert text.startswith("Waiting for GPS fix...\nWWVB bearing 70.6 deg at 1501.7 km")
+    assert text.count("Waiting for GPS fix...") == 1
     assert text.count("\rheading mag") == 2
     assert "heading mag 20.0" in text
-    assert "turn n/a" in text
+    assert "turn n/a" not in text
     assert text.endswith("\033[K\n")
-    assert slept == [1.0, 1.0]
+    assert slept == [1.0, 1.0, 1.0, 1.0]
 
 
 def test_compass_status_names_the_turn_direction(monkeypatch):
@@ -596,11 +663,40 @@ def test_compass_status_names_the_turn_direction(monkeypatch):
     assert "counterclockwise" in text
 
 
+def test_orientate_waits_for_a_gps_fix_before_reading_the_compass(monkeypatch, capsys):
+    monkeypatch.setattr("gps_wwvb.cli.time.sleep", lambda _seconds: None)
+    fixes = [None, _sjc_fix()]
+    readings = [CompassReading(180.0, 180.0, 0, 0, 1, 1, 0, 0, 0.0)]
+
+    class _ScriptGps:
+        exhausted = False
+
+        def read_fix(self, timeout: float = 2.0):
+            del timeout
+            return fixes.pop(0) if fixes else _sjc_fix()
+
+    class _ScriptCompass:
+        def read(self):
+            assert not fixes, "compass was read before GPS had a fix"
+            return readings.pop(0) if readings else None
+
+    args = SimpleNamespace(interval=0.2)
+    config = SimpleNamespace(compass_calibrated=True)
+    assert cmd_orientate(args, config, (_ScriptGps(), _ScriptCompass(), _Closable())) == 0
+    out = capsys.readouterr().out
+    assert "Waiting for GPS fix..." in out
+    assert "WWVB bearing 70.6 deg." in out
+    assert "set 70.6 deg" in out
+    assert "off n/a" not in out
+
+
 def test_orientation_line_shows_the_set_heading_and_the_error():
     assert format_orientation(283.6, 283.6) == "pointing 283.6 deg  set 283.6 deg  off 0.0 deg"
     assert format_orientation(343.0, 283.6) == (
         "pointing 343.0 deg  set 283.6 deg  off 59.4 deg counterclockwise"
     )
+    assert format_orientation(233.1, 278.1, 2) == "pointing 233.1 deg  set 233.1 deg  off 0.0 deg"
+    assert format_orientation(323.1, 278.1, 1) == "pointing 323.1 deg  set 323.1 deg  off 0.0 deg"
     assert format_orientation(None, 10.0) == "pointing n/a deg  set n/a  off n/a"
 
 
@@ -778,6 +874,10 @@ class _ScriptedWwvb:
         self._readings = list(readings)
         self.exhausted = not self._readings
         self.receive_calls = 0
+        self.selected_antenna: int | None = None
+
+    def set_antenna(self, antenna: int | None) -> None:
+        self.selected_antenna = antenna
 
     def receive(self):
         self.receive_calls += 1
