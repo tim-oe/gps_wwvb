@@ -308,6 +308,7 @@ def test_ubxtool_backend_commands_and_cleanup(tmp_path: Path, monkeypatch):
     assert backend.state.pi_act_led_on is True
 
     backend.toggle_constellation("BeiDou")
+    backend.toggle_constellation("QZSS")
     backend.set_dyn_model(2)
     backend.set_pps_mode("dim")
     backend.set_pps_mode("off")
@@ -322,8 +323,24 @@ def test_ubxtool_backend_commands_and_cleanup(tmp_path: Path, monkeypatch):
 
     assert any("stop" in cmd and "gpsd.service" in cmd for cmd in calls)
     assert any("start" in cmd and "gpsd.service" in cmd for cmd in calls)
+    assert any("-c" in cmd and "06,3e,00,00,ff,01,05,00,03,00,00,00,05,00" in cmd for cmd in calls)
     assert any("SAVE" in cmd for cmd in calls)
     assert any("RESET" in cmd for cmd in calls)
+
+
+def test_parse_ubxtool_ignores_sent_echo():
+    echo = """
+sent:
+UBX-CFG-GNSS:
+ msgVer 0  numTrkChHw 0 numTrkChUse 255 numConfigBlocks 1
+  gnssId 5 TrkCh  0 maxTrCh  3 reserved 0 Flags x00050000
+   QZSS L1C/A L1S
+
+UBX-ACK-NAK:
+  NAK to Class x06 (CFG) ID x3e (GNSS)
+"""
+    state = parse_ubxtool_output(echo)
+    assert state.constellations["QZSS"].enabled is True
 
 
 def test_ubxtool_backend_error_paths(tmp_path: Path, monkeypatch):

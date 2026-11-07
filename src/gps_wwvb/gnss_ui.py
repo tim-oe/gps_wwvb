@@ -44,12 +44,17 @@ DEFAULT_ANT_CABLE_DELAY_NS = 50
 DEFAULT_PPS_MODE = "normal"
 
 UBXTOOL_CONSTELLATION_ARG: dict[str, str] = {
-    "GPS": "GPS",
     "Galileo": "GALILEO",
     "GLONASS": "GLONASS",
     "BeiDou": "BEIDOU",
     "SBAS": "SBAS",
-    "QZSS": "QZSS",
+}
+# ubxtool has no -e/-d QZSS option, and its -e/-d GPS toggles both GPS and QZSS
+# together. Sending a single-block UBX-CFG-GNSS (0x06, 0x3e) command via -c lets
+# GPS and QZSS be toggled independently: (gnssId, resTrkCh, maxTrkCh, sigCfgMask).
+UBX_RAW_GNSS_BLOCK: dict[str, tuple[int, int, int, int]] = {
+    "GPS": (0, 8, 16, 0x01),
+    "QZSS": (5, 0, 3, 0x05),
 }
 
 PPS_MODES: tuple[tuple[str, str], ...] = (
@@ -150,8 +155,17 @@ def parse_ubxtool_output(text: str, state: GnssState | None = None) -> GnssState
         target.constellations = default_constellations()
 
     extensions: list[str] = []
+    in_sent = False
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if line == "sent:":
+            in_sent = True
+            continue
+        if not line:
+            in_sent = False
+            continue
+        if in_sent:
+            continue
         _parse_mon_ver_line(line, target, extensions)
         _parse_cfg_line(line, target)
 
@@ -385,13 +399,24 @@ class UbxtoolBackend:
         return self.set_constellation(name, not entry.enabled)
 
     def set_constellation(self, name: str, enabled: bool) -> str:
-        ubx_name = UBXTOOL_CONSTELLATION_ARG[name]
-        flag = "-e" if enabled else "-d"
-        out = self._run_ubxtool(flag, ubx_name, "-p", "CFG-GNSS", "-v", "2")
+        if name in UBX_RAW_GNSS_BLOCK:
+            gnss_id, res_ch, max_ch, sig_mask = UBX_RAW_GNSS_BLOCK[name]
+            en_byte = 1 if enabled else 0
+            raw_cmd = (
+                f"06,3e,00,00,ff,01,{gnss_id:02x},{res_ch:02x},"
+                f"{max_ch:02x},00,{en_byte:02x},00,{sig_mask:02x},00"
+            )
+            out_cmd = self._run_ubxtool("-c", raw_cmd, "-v", "2")
+            out_poll = self._run_ubxtool("-p", "CFG-GNSS", "-v", "2")
+            out = f"{out_cmd}\n{out_poll}"
+        else:
+            ubx_name = UBXTOOL_CONSTELLATION_ARG[name]
+            flag = "-e" if enabled else "-d"
+            out = self._run_ubxtool(flag, ubx_name, "-p", "CFG-GNSS", "-v", "2")
         parse_ubxtool_output(out, self.state)
         self.state.dirty = True
         if "UBX-ACK-NAK" in out:
-            return f"Receiver rejected {flag} {ubx_name} (check concurrent constellation limit)."
+            return f"Receiver rejected {name} change (check concurrent constellation limit)."
         verb = "Enabled" if self.state.constellations[name].enabled else "Disabled"
         return f"{verb} {name} (press 's' to save to BBR)."
 
@@ -487,6 +512,8 @@ class UbxtoolBackend:
             "ubxtool",
             "-P",
             self.state.prot_ver,
+            "-w",
+            "1.0",
             "-f",
             self.state.device,
             "-s",
@@ -494,8 +521,8 @@ class UbxtoolBackend:
             *ubx_args,
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=15.0)
-        if res.returncode != 0 and not res.stdout:
-            detail = res.stderr.strip() or f"exit code {res.returncode}"
+        if res.returncode != 0:
+            detail = res.stderr.strip() or res.stdout.strip() or f"exit code {res.returncode}"
             raise RuntimeError(f"ubxtool failed: {detail}")
         return res.stdout + ("\n" + res.stderr if res.stderr else "")
 
