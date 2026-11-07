@@ -63,6 +63,7 @@ gps-wwvb compass --ant 2
 gps-wwvb orientate
 gps-wwvb --config /etc/gps_wwvb.toml calibrate
 gps-wwvb calibrate-compass --duration 30
+gps-wwvb gnss-ui
 gps-wwvb record --out recordings/sample --duration 60
 gps-wwvb --replay recordings/sample status
 ```

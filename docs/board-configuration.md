@@ -1,6 +1,31 @@
 # Board Configuration, Serial Settings, and LED Control
 
-This guide supplements the main [README](../README.md) with details on the Waveshare MAX-M8Q GNSS HAT hardware settings, controlling or dimming onboard LEDs, and configuring the u-blox MAX-M8Q receiver over the serial port (`/dev/ttyS0`) with `ubxtool`.
+This guide supplements the main [README](../README.md) with details on the Waveshare MAX-M8Q GNSS HAT hardware settings, controlling or dimming onboard LEDs, and configuring the u-blox MAX-M8Q receiver over the serial port (`/dev/ttyS0`) with `gps-wwvb gnss-ui` or `ubxtool`.
+
+## Interactive Ncurses Configuration UI (`gps-wwvb gnss-ui`)
+
+`gps-wwvb gnss-ui` provides an interactive terminal UI (built on Python's standard `curses` library, no X11/desktop required) to view and configure the MAX-M8Q over SSH:
+
+```bash
+# From the development machine (syncs src/ and opens the ncurses UI on the Pi):
+make gnss-ui
+
+# Or directly on the Pi:
+gps-wwvb gnss-ui
+
+# Or locally in simulation mode:
+poetry run gps-wwvb gnss-ui --simulate
+```
+
+`gnss-ui` automatically stops `gpsd.socket` and `gpsd.service` while open so it can talk to `/dev/ttyS0` via `ubxtool`, and restarts `gpsd` when you press `q` to quit.
+
+- **`Up` / `Down` (or `j` / `k`):** Select a setting (`GPS`, `Galileo`, `GLONASS`, `BeiDou`, `SBAS`, `QZSS`, `Dynamic Platform Model`, `HAT PPS LED & Pulse Width`, `Antenna Cable Delay`, or `Pi Zero Green ACT LED`).
+- **`Space` / `Enter` / `Left` / `Right`:** Toggle the selected constellation/LED or cycle through options (`Normal 100 ms` / `Dimmed 50 µs` / `Off` for the PPS LED; `Portable` / `Stationary` / etc. for the Dynamic Platform Model; `±5 ns` for Antenna Cable Delay).
+- **`s`:** Save the active configuration to battery-backed RAM (`UBX-CFG-CFG`).
+- **`r`:** Re-poll `MON-VER`, `CFG-GNSS`, `CFG-NAV5`, and `CFG-TP5` from the receiver.
+- **`d` / `Backspace`:** Reset **only the currently selected field** to its factory default (`GPS`/`GLONASS`/`SBAS`/`QZSS` on, `Galileo`/`BeiDou` off, `Dynamic Platform Model = 0 (Portable)`, `PPS = Normal 100 ms`, `Antenna Cable Delay = 50 ns`, `Pi ACT LED = ON`).
+- **`D` (`Shift+D`):** Reset **all** receiver settings to factory defaults (`UBX-CFG-CFG` reset).
+- **`q` / `Esc`:** Quit and restart `gpsd`.
 
 ## Hardware Overview and Jumper Selection
 

@@ -131,8 +131,10 @@ class CalibratedCompass:
         self._device.close()
 
 
-def close_devices(*devices: GpsSource | CompassSource | WwvbSource) -> None:
+def close_devices(*devices: GpsSource | CompassSource | WwvbSource | None) -> None:
     for device in devices:
+        if device is None:
+            continue
         try:
             device.close()
         except Exception:

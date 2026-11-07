@@ -32,6 +32,7 @@ from gps_wwvb.geo import (
     propagation,
     true_heading_deg,
 )
+from gps_wwvb.gnss_ui import SimGnssBackend, UbxtoolBackend, run_gnss_ui
 from gps_wwvb.monitor import ANTENNA_AIM_TOLERANCE_DEG, Monitor, format_number
 from gps_wwvb.recording import RecordingError, record_devices
 from gps_wwvb.util.logging import init_logging
@@ -60,6 +61,7 @@ COMMANDS = {
     "calibrate",
     "calibrate-compass",
     "record",
+    "gnss-ui",
 }
 
 
@@ -93,7 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     elif name == "replay":
         logger.info("Replaying %s.", args.replay)
     try:
-        devices = open_devices(config, simulate=args.simulate, replay=args.replay)
+        devices = (
+            (None, None, None)
+            if args.cmd == "gnss-ui"
+            else open_devices(config, simulate=args.simulate, replay=args.replay)
+        )
     except Exception:
         logger.exception("Failed to open devices")
         return 1
@@ -246,6 +252,24 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--out", type=Path, required=True, help="directory to create")
     record.add_argument("--duration", type=float, required=True, help="seconds to record")
     record.set_defaults(func=cmd_record)
+
+    gnss_ui = sub.add_parser(
+        "gnss-ui",
+        parents=[common],
+        help="ncurses UI to view and configure the u-blox MAX-M8Q",
+    )
+    gnss_ui.add_argument(
+        "--device",
+        default="/dev/ttyS0",
+        help="serial device for the MAX-M8Q (default /dev/ttyS0)",
+    )
+    gnss_ui.add_argument(
+        "--speed",
+        type=int,
+        default=9600,
+        help="serial baud rate (default 9600)",
+    )
+    gnss_ui.set_defaults(func=cmd_gnss_ui)
     return parser
 
 
@@ -629,6 +653,23 @@ def cmd_record(args, config, devices: Devices) -> int:
         return 1
     print(f"Saved {args.out}")
     return 0
+
+
+def cmd_gnss_ui(args, config, devices) -> int:
+    del config, devices
+    name = backend_name(simulate=args.simulate, replay=args.replay)
+    if name == "hardware":
+        backend: SimGnssBackend | UbxtoolBackend = UbxtoolBackend(
+            device=args.device,
+            speed=args.speed,
+        )
+    else:
+        backend = SimGnssBackend(device=args.device, speed=args.speed)
+    try:
+        return run_gnss_ui(backend)
+    except Exception as exc:
+        print(f"GNSS UI: {exc}", file=sys.stderr)
+        return 1
 
 
 def _call(label: str, func, *args):
